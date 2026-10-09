@@ -29,7 +29,7 @@ from core.java_manager import get_required_java_version
 # ── Appearance ────────────────────────────────────────────────────────────────
 
 ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("green")
+ctk.set_default_color_theme("blue")
 
 # Colour tokens — loaded from the active theme at module level (defaults).
 # MainWindow.__init__ reloads from config and _apply_theme() updates live.
@@ -198,6 +198,7 @@ class NewProfileDialog(ctk.CTkToplevel):
         is_fabric = self.type_var.get() == "fabric"
         versions = self.fabric_versions if is_fabric else self.all_versions
 
+
         # Toggle mods frame
         if is_fabric:
             self.mods_outer.pack(fill="x", padx=20, pady=(8, 0))
@@ -362,21 +363,22 @@ class MainWindow(ctk.CTk):
 
     def _setup_ui(self):
         self.title("FlowwwClient")
+        self.geometry("1120x740")
         self.minsize(960, 660)
         self.configure(fg_color=BG_PRIMARY)
 
         # Root vstack
         root = ctk.CTkFrame(self, fg_color="transparent")
-        root.pack(fill="both", expand=True, padx=24, pady=20)
+        root.pack(fill="both", expand=True, padx=28, pady=24)
 
         # ── Header ────────────────────────────────────────────────────────────
         header = ctk.CTkFrame(root, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 12))
+        header.pack(fill="x", pady=(0, 18))
 
         # Title block
         self.title_lbl = ctk.CTkLabel(
             header, text="⛏  FlowwwClient",
-            font=ctk.CTkFont(size=24, weight="bold"),
+            font=ctk.CTkFont(size=28, weight="bold"),
             text_color=self.theme["ACCENT"],
         )
         self.title_lbl.pack(side="left", anchor="s")
@@ -494,14 +496,14 @@ class MainWindow(ctk.CTk):
         # Profile list (scrollable frame with radio-style selection)
         self.profile_list_frame = ctk.CTkScrollableFrame(
             left, label_text="", fg_color=BG_SECONDARY,
-            border_color=BORDER_COL, border_width=1,
+            border_color=BORDER_COL, border_width=1, corner_radius=12,
         )
         self.profile_list_frame.pack(fill="both", expand=True, pady=(0, 8))
 
         # Info card
         self.info_card = ctk.CTkFrame(
             left, fg_color=BG_SECONDARY,
-            border_color=BORDER_COL, border_width=1, corner_radius=6,
+            border_color=BORDER_COL, border_width=1, corner_radius=12,
         )
         self.info_card.pack(fill="x", pady=(0, 8))
         self.info_version_lbl = ctk.CTkLabel(
@@ -531,10 +533,11 @@ class MainWindow(ctk.CTk):
 
         # Single smart Play / Install & Play button
         self.play_btn = ctk.CTkButton(
-            left, text="▶  PLAY",
+            left, text="▶  PLAY NOW",
+            corner_radius=12,
             fg_color=GREEN, text_color=BG_PRIMARY,
             hover_color=GREEN_DARK, font=ctk.CTkFont(size=15, weight="bold"),
-            height=44, command=self._on_play_btn,
+            height=48, command=self._on_play_btn,
         )
         self.play_btn.pack(fill="x")
 
@@ -551,6 +554,7 @@ class MainWindow(ctk.CTk):
         self.log_box = ctk.CTkTextbox(
             right, state="disabled",
             fg_color=BG_CONSOLE, border_color=BORDER_COL, border_width=1,
+            corner_radius=12,
             font=ctk.CTkFont(family="monospace", size=11),
             text_color="#a0aec0",
         )

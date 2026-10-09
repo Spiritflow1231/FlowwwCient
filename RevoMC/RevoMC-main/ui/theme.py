@@ -20,9 +20,9 @@ def get_theme(name: str) -> dict:
             "BG_SECONDARY": "#25213b",
             "BG_CONSOLE": "#100e19",
             "BORDER_COL": "#40365f",
-            "ACCENT": "#a78bfa",
-            "ACCENT_DARK": "#8b5cf6",
-            "ACCENT_ALT": "#c4b5fd",
+            "ACCENT": "#7dd3fc",
+            "ACCENT_DARK": "#38bdf8",
+            "ACCENT_ALT": "#bae6fd",
         },
         "nether": {
             "BG_PRIMARY": "#2e1a1a",
@@ -38,9 +38,9 @@ def get_theme(name: str) -> dict:
             "BG_SECONDARY": "#16213e",
             "BG_CONSOLE": "#0f0f1a",
             "BORDER_COL": "#2d3748",
-            "ACCENT": "#a78bfa",
-            "ACCENT_DARK": "#7c3aed",
-            "ACCENT_ALT": "#c4b5fd",
+            "ACCENT": "#7dd3fc",
+            "ACCENT_DARK": "#38bdf8",
+            "ACCENT_ALT": "#bae6fd",
         }
     }
     
