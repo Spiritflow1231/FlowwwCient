@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Launcher user data - never push this
+*.revomc/
+*.minecraft/
+config.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+#PAT
+pat.txt
+
+#txt
+UPDATE VERSION IN updater.py!.txt
+
+#Build tester
+builds/*.exe
+builds/*.exe.old
+builds/*.app
+builds/RevoMC
+builds/RevoMC/
+
+dd.md
+# FlowwwClient local build files
+.venv312/
+builds/FlowwwClient/
+
+# Local Python environment
+.venv312/
+
+# Generated launcher builds
+builds/
