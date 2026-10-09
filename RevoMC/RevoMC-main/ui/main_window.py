@@ -369,10 +369,70 @@ class MainWindow(ctk.CTk):
 
         # Root vstack
         root = ctk.CTkFrame(self, fg_color="transparent")
-        root.pack(fill="both", expand=True, padx=28, pady=24)
+        root.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Left navigation sidebar
+        sidebar = ctk.CTkFrame(
+            root, width=190, fg_color=BG_SECONDARY, corner_radius=0
+        )
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+
+        ctk.CTkLabel(
+            sidebar,
+            text="⛏ FLOWWW",
+            font=ctk.CTkFont(size=22, weight="bold"),
+            text_color=self.theme["ACCENT"],
+        ).pack(anchor="w", padx=20, pady=(28, 2))
+
+        ctk.CTkLabel(
+            sidebar,
+            text="MINECRAFT CLIENT",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=TEXT_MUTED,
+        ).pack(anchor="w", padx=21, pady=(0, 30))
+
+        ctk.CTkLabel(
+            sidebar,
+            text="WORKSPACE",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=TEXT_MUTED,
+        ).pack(anchor="w", padx=20, pady=(0, 8))
+
+        main_area = ctk.CTkFrame(root, fg_color="transparent")
+        main_area.pack(
+            side="left", fill="both", expand=True, padx=28, pady=24
+        )
+        self.nav_buttons = {}
+
+        def nav_button(key, label, command):
+            btn = ctk.CTkButton(
+                sidebar,
+                text=label,
+                anchor="w",
+                height=44,
+                corner_radius=10,
+                fg_color="transparent",
+                hover_color=BG_PRIMARY,
+                text_color=TEXT_FG,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                command=command,
+            )
+            btn.pack(fill="x", padx=12, pady=4)
+            self.nav_buttons[key] = btn
+
+        nav_button("dashboard", "▦   Dashboard",
+                   lambda: self._show_page("dashboard"))
+        nav_button("profiles", "▤   Profiles",
+                   lambda: self._show_page("profiles"))
+        nav_button("console", "⌘   Console",
+                   lambda: self._show_page("console"))
+        nav_button("settings", "⚙   Settings",
+                   self._on_open_settings)
+
 
         # ── Header ────────────────────────────────────────────────────────────
-        header = ctk.CTkFrame(root, fg_color="transparent")
+        header = ctk.CTkFrame(main_area, fg_color="transparent")
         header.pack(fill="x", pady=(0, 18))
 
         # Title block
@@ -450,10 +510,10 @@ class MainWindow(ctk.CTk):
         self._refresh_auth_panel()
 
         # Divider
-        ctk.CTkFrame(root, height=1, fg_color=BORDER_COL).pack(fill="x", pady=(0, 14))
+        ctk.CTkFrame(main_area, height=1, fg_color=BORDER_COL).pack(fill="x", pady=(0, 14))
 
         # ── Content (left + right columns) ────────────────────────────────────
-        content = ctk.CTkFrame(root, fg_color="transparent")
+        content = ctk.CTkFrame(main_area, fg_color="transparent")
         content.pack(fill="both", expand=True)
         content.columnconfigure(0, weight=1)
         content.columnconfigure(1, weight=1)
@@ -461,9 +521,51 @@ class MainWindow(ctk.CTk):
 
         self._build_left(content)
         self._build_right(content)
+        self._show_page("dashboard")
+
+    def _show_page(self, page):
+        if not hasattr(self, "left_panel") or not hasattr(self, "right_panel"):
+            return
+
+        content = self.left_panel.master
+
+        self.left_panel.grid_forget()
+        self.right_panel.grid_forget()
+
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=1)
+
+        if page == "dashboard":
+            self.left_panel.grid(
+                row=0, column=0, sticky="nsew", padx=(0, 8)
+            )
+            self.right_panel.grid(
+                row=0, column=1, sticky="nsew", padx=(8, 0)
+            )
+
+        elif page == "profiles":
+            content.columnconfigure(1, weight=0)
+            self.left_panel.grid(
+                row=0, column=0, columnspan=2, sticky="nsew"
+            )
+
+        elif page == "console":
+            content.columnconfigure(1, weight=0)
+            self.right_panel.grid(
+                row=0, column=0, columnspan=2, sticky="nsew"
+            )
+
+        for key, btn in self.nav_buttons.items():
+            active = key == page
+            btn.configure(
+                fg_color=self.theme["ACCENT"] if active else "transparent",
+                hover_color=GREEN_DARK if active else BG_PRIMARY,
+                text_color=BG_PRIMARY if active else TEXT_FG,
+            )
 
     def _build_left(self, parent):
         left = ctk.CTkFrame(parent, fg_color="transparent")
+        self.left_panel = left
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.rowconfigure(1, weight=1)
 
@@ -546,32 +648,61 @@ class MainWindow(ctk.CTk):
 
     def _build_right(self, parent):
         right = ctk.CTkFrame(parent, fg_color="transparent")
+        self.right_panel = right
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         right.rowconfigure(1, weight=1)
 
-        _section_label(right, "Console").pack(anchor="w", pady=(0, 4))
+        # Console header
+        header = ctk.CTkFrame(right, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 10))
 
+        _section_label(header, "Game Console").pack(side="left")
+
+        self.console_status = ctk.CTkLabel(
+            header,
+            text="● READY",
+            text_color=GREEN,
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
+        self.console_status.pack(side="right")
+
+        # Log output card
         self.log_box = ctk.CTkTextbox(
-            right, state="disabled",
-            fg_color=BG_CONSOLE, border_color=BORDER_COL, border_width=1,
+            right,
+            state="disabled",
+            fg_color=BG_CONSOLE,
+            border_color=BORDER_COL,
+            border_width=1,
             corner_radius=12,
             font=ctk.CTkFont(family="monospace", size=11),
             text_color="#a0aec0",
         )
-        self.log_box.pack(fill="both", expand=True, pady=(0, 8))
+        self.log_box.pack(fill="both", expand=True, pady=(0, 12))
+
+        # Launch progress
+        progress_header = ctk.CTkFrame(right, fg_color="transparent")
+        progress_header.pack(fill="x", pady=(0, 6))
+
+        _section_label(progress_header, "LAUNCH PROGRESS").pack(side="left")
 
         self.progress_bar = ctk.CTkProgressBar(
-            right, progress_color=GREEN, fg_color=BG_SECONDARY,
+            right,
+            progress_color=GREEN,
+            fg_color=BG_SECONDARY,
+            height=8,
+            corner_radius=6,
         )
         self.progress_bar.set(0)
-        self.progress_bar.pack(fill="x", pady=(0, 4))
+        self.progress_bar.pack(fill="x", pady=(0, 8))
 
         self.status_lbl = ctk.CTkLabel(
-            right, text="Ready.", text_color=TEXT_LABEL,
-            font=ctk.CTkFont(size=11), anchor="w",
+            right,
+            text="Ready to launch Minecraft.",
+            text_color=TEXT_MUTED,
+            font=ctk.CTkFont(size=12),
+            anchor="w",
         )
-        self.status_lbl.pack(anchor="w")
-
+        self.status_lbl.pack(anchor="w", pady=(0, 4))
     # ── Version loading ────────────────────────────────────────────────────────
 
     def _load_versions(self):
