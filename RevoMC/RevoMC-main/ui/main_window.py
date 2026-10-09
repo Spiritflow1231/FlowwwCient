@@ -1,0 +1,1112 @@
+"""
+ui/main_window.py  –  CustomTkinter UI for FlowwwClient
+All program logic is identical to the original PyQt6 version.
+"""
+
+import os
+import platform
+import ctypes
+import struct
+import subprocess
+import threading
+import customtkinter as ctk
+from tkinter import messagebox
+
+import core.config as config
+import core.auth as auth
+from ui.theme import get_theme
+from core.installer import (
+    fetch_release_versions,
+    fetch_fabric_versions,
+    install_minecraft,
+    install_fabric,
+    install_mods,
+    AVAILABLE_MODS,
+)
+from core.launcher import launch
+from core.java_manager import get_required_java_version
+
+# ── Appearance ────────────────────────────────────────────────────────────────
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("green")
+
+# Colour tokens — loaded from the active theme at module level (defaults).
+# MainWindow.__init__ reloads from config and _apply_theme() updates live.
+_t = get_theme(config.load().get("theme", "overworld"))
+BG_PRIMARY   = _t["BG_PRIMARY"]
+BG_SECONDARY = _t["BG_SECONDARY"]
+BG_CONSOLE   = _t["BG_CONSOLE"]
+BORDER_COL   = _t["BORDER_COL"]
+GREEN        = _t["ACCENT"]
+GREEN_DARK   = _t["ACCENT_DARK"]
+BLUE         = _t["ACCENT_ALT"]
+RED          = _t["RED"]
+MS_BLUE      = _t["MS_BLUE"]
+MS_BLUE_DARK = _t["MS_BLUE_DARK"]
+TEXT_FG      = _t["TEXT_FG"]
+TEXT_MUTED   = _t["TEXT_MUTED"]
+TEXT_LABEL   = _t["TEXT_LABEL"]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _get_system_ram_gb() -> int:
+    """Detect total system RAM in GB. Returns at least 2."""
+    try:
+        system = platform.system()
+        if system == "Windows":
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(stat)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
+            return max(2, int(stat.ullTotalPhys / (1024 ** 3)))
+        elif system == "Darwin":
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
+            return max(2, int(int(out.strip()) / (1024 ** 3)))
+        else:  # Linux
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        kb = int(line.split()[1])
+                        return max(2, int(kb / (1024 ** 2)))
+    except Exception:
+        pass
+    return 16  # safe fallback
+
+
+def _section_label(master, text: str) -> ctk.CTkLabel:
+    return ctk.CTkLabel(
+        master, text=text.upper(),
+        text_color=TEXT_LABEL,
+        font=ctk.CTkFont(size=10, weight="bold"),
+    )
+
+
+# ── New Profile Dialog ─────────────────────────────────────────────────────────
+
+class NewProfileDialog(ctk.CTkToplevel):
+    """Modal dialog for creating a new profile.  Mirrors the original QDialog."""
+
+    def __init__(self, parent, all_versions: list[str], fabric_versions: list[str],
+                 existing_profile_names: set[str] | None = None):
+        super().__init__(parent)
+        self.all_versions    = all_versions
+        self.fabric_versions = fabric_versions
+        self._existing_profile_names = existing_profile_names or set()
+        self.result: dict | None = None
+
+        self.title("New Profile")
+        self.geometry("460x600")
+        self.resizable(False, True)
+        self.minsize(460, 480)
+        # Make modal
+        self.transient(parent)
+
+        self._build()
+        self.update_idletasks()
+        self.after(200, self.grab_set)
+        self.wait_window(self)  # blocks until dialog closes
+
+    # ── Dialog UI ─────────────────────────────────────────────────────────────
+
+    def _build(self):
+        pad = {"padx": 20, "pady": (8, 0)}
+
+        # ── Bottom buttons pinned first so they're always visible ─────────────
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=12)
+        ctk.CTkButton(btn_row, text="Cancel", fg_color="transparent",
+                      border_width=1, border_color=BORDER_COL,
+                      text_color=TEXT_FG,
+                      command=self.destroy).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(btn_row, text="Create", fg_color=GREEN, text_color=BG_PRIMARY,
+                      hover_color=GREEN_DARK,
+                      command=self._on_ok).pack(side="right")
+
+        # ── Scrollable body ───────────────────────────────────────────────────
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True)
+
+        # Profile name (optional)
+        _section_label(body, "Profile Name  (optional)").pack(anchor="w", padx=20, pady=(10, 0))
+        self.name_var = ctk.StringVar()
+        ctk.CTkEntry(
+            body, textvariable=self.name_var,
+            placeholder_text="Leave blank for default name…",
+            width=420,
+        ).pack(padx=20, pady=(4, 0))
+
+        # Profile type
+        _section_label(body, "Profile Type").pack(anchor="w", padx=20, pady=(10, 0))
+        type_row = ctk.CTkFrame(body, fg_color="transparent")
+        type_row.pack(anchor="w", padx=20, pady=(4, 0))
+        self.type_var = ctk.StringVar(value="fabric")
+        ctk.CTkRadioButton(
+            type_row, text="Fabric + Mods",
+            variable=self.type_var, value="fabric",
+            command=self._on_type_changed,
+        ).pack(side="left", padx=(0, 16))
+        ctk.CTkRadioButton(
+            type_row, text="Vanilla",
+            variable=self.type_var, value="vanilla",
+            command=self._on_type_changed,
+        ).pack(side="left")
+
+        # Minecraft version list
+        _section_label(body, "Minecraft Version").pack(anchor="w", padx=20, pady=(10, 0))
+        self.version_frame = ctk.CTkScrollableFrame(body, height=150, width=420)
+        self.version_frame.pack(padx=20, pady=(4, 0))
+        self._version_buttons: list[ctk.CTkButton] = []
+        self._selected_version: str | None = None
+
+        # Mods section
+        self.mods_outer = ctk.CTkFrame(body, fg_color="transparent")
+        self.mods_outer.pack(fill="x", padx=20, pady=(10, 0))
+        _section_label(self.mods_outer, "Mods  (Fabric API always included)").pack(anchor="w")
+        self.mod_vars: dict[str, ctk.BooleanVar] = {}
+        for key, mod in AVAILABLE_MODS.items():
+            var = ctk.BooleanVar(value=True)
+            self.mod_vars[key] = var
+            ctk.CTkCheckBox(
+                self.mods_outer,
+                text=f"{mod['label']}  :  {mod['desc']}",
+                variable=var,
+            ).pack(anchor="w", pady=2)
+
+        self._on_type_changed()  # initial populate
+
+    def _on_type_changed(self):
+        # Clear existing buttons
+        for btn in self._version_buttons:
+            btn.destroy()
+        self._version_buttons.clear()
+        self._selected_version = None
+
+        is_fabric = self.type_var.get() == "fabric"
+        versions = self.fabric_versions if is_fabric else self.all_versions
+
+        # Toggle mods frame
+        if is_fabric:
+            self.mods_outer.pack(fill="x", padx=20, pady=(8, 0))
+        else:
+            self.mods_outer.pack_forget()
+
+        # Populate version list
+        for i, v in enumerate(versions):
+            btn = ctk.CTkButton(
+                self.version_frame, text=v,
+                fg_color="transparent", text_color=TEXT_FG,
+                hover_color=BG_SECONDARY, anchor="w",
+                command=lambda ver=v: self._select_version(ver),
+            )
+            btn.pack(fill="x", pady=1)
+            self._version_buttons.append(btn)
+            if i == 0:
+                self._select_version(v)
+
+    def _select_version(self, ver: str):
+        self._selected_version = ver
+        for btn in self._version_buttons:
+            if btn.cget("text") == ver:
+                btn.configure(fg_color=GREEN, text_color=BG_PRIMARY)
+            else:
+                btn.configure(fg_color="transparent", text_color=TEXT_FG)
+
+    def _on_ok(self):
+        if not self._selected_version:
+            return
+        profile_type = self.type_var.get()
+        name = self.name_var.get().strip()
+        if not name:
+            # Generate incremental unnamed profile name
+            existing_names = self._existing_profile_names
+            prefix = (
+                "Unnamed Fabric Installation"
+                if profile_type == "fabric"
+                else "Unnamed Vanilla Installation"
+            )
+            n = 1
+            while f"{prefix} {n}" in existing_names:
+                n += 1
+            name = f"{prefix} {n}"
+        enabled_mods = (
+            [k for k, v in self.mod_vars.items() if v.get()]
+            if profile_type == "fabric"
+            else []
+        )
+        self.result = {
+            "name": name,
+            "mc_version": self._selected_version,
+            "type": profile_type,
+            "mods": enabled_mods,
+        }
+        self.destroy()
+
+
+# ── Settings Dialog ────────────────────────────────────────────────────────────
+
+class SettingsDialog(ctk.CTkToplevel):
+    """Modal dialog for launcher settings (theme, dGPU, etc.)."""
+
+    def __init__(self, parent, theme: dict, cfg: dict):
+        super().__init__(parent)
+        self.theme = theme
+        self.cfg = cfg
+        self.result = False  # True if theme changed
+
+        self.title("Settings")
+        self.geometry("400x320")
+        self.resizable(False, False)
+        self.transient(parent)
+
+        self._build()
+        self.update_idletasks()
+        self.after(200, self.grab_set)
+        self.wait_window(self)
+
+    def _build(self):
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=20, pady=20)
+
+        _section_label(body, "Theme").pack(anchor="w", pady=(0, 10))
+        self.theme_var = ctk.StringVar(value=self.cfg.get("theme", "overworld"))
+
+        themes_frame = ctk.CTkFrame(body, fg_color="transparent")
+        themes_frame.pack(fill="x", pady=(0, 20))
+
+        for t_val, t_name, t_icon in [("overworld", "Overworld", "🌲"), ("nether", "Nether", "🔥"), ("end", "End", "🌌")]:
+            ctk.CTkRadioButton(
+                themes_frame, text=f"{t_icon} {t_name}",
+                variable=self.theme_var, value=t_val,
+                text_color=self.theme["TEXT_FG"],
+                fg_color=self.theme["ACCENT"],
+                hover_color=self.theme["ACCENT_DARK"],
+            ).pack(side="left", padx=(0, 15))
+
+        _section_label(body, "Performance").pack(anchor="w", pady=(0, 10))
+        self.dgpu_var = ctk.BooleanVar(value=self.cfg.get("use_dgpu", False))
+        ctk.CTkCheckBox(
+            body, text="Run on Discrete GPU (NVIDIA/AMD)  —  Linux & Windows",
+            variable=self.dgpu_var,
+            text_color=self.theme["TEXT_FG"],
+            hover_color=self.theme["ACCENT_DARK"],
+            fg_color=self.theme["ACCENT"],
+        ).pack(anchor="w")
+
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(side="bottom", fill="x", padx=20, pady=12)
+        ctk.CTkButton(
+            btn_row, text="Cancel", fg_color="transparent",
+            border_width=1, border_color=self.theme["BORDER_COL"],
+            text_color=self.theme["TEXT_FG"],
+            command=self.destroy,
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            btn_row, text="Save", fg_color=self.theme["ACCENT"],
+            text_color=self.theme["BG_PRIMARY"],
+            hover_color=self.theme["ACCENT_DARK"],
+            command=self._on_save,
+        ).pack(side="right")
+
+    def _on_save(self):
+        old_theme = self.cfg.get("theme", "overworld")
+        new_theme = self.theme_var.get()
+        self.cfg["theme"] = new_theme
+        self.cfg["use_dgpu"] = self.dgpu_var.get()
+        config.save(self.cfg)
+        if old_theme != new_theme:
+            self.result = True
+        self.destroy()
+
+
+# ── Main Window ───────────────────────────────────────────────────────────────
+
+
+class MainWindow(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        self.cfg              = config.load()
+        self.theme            = get_theme(self.cfg.get("theme", "overworld"))
+        self.all_versions: list[str]    = []
+        self.fabric_versions: list[str] = []
+        self._busy            = False
+        self._selected_profile_idx: int = -1
+        self._ms_account: dict | None = None
+
+        self._setup_ui()
+        self._check_java()
+        self._load_versions()
+        self._try_restore_session()
+
+    # ── Java check (same as original) ─────────────────────────────────────────
+
+    def _check_java(self):
+        from core.updater import CURRENT_VERSION
+        self._log(f"🚀 FlowwwClient Launcher Version: {CURRENT_VERSION}")
+        self._log("☕ Java runtimes are downloaded on demand (Java 8 / 21 / 25).")
+
+    # ── UI Construction ───────────────────────────────────────────────────────
+
+    def _setup_ui(self):
+        self.title("FlowwwClient")
+        self.minsize(960, 660)
+        self.configure(fg_color=BG_PRIMARY)
+
+        # Root vstack
+        root = ctk.CTkFrame(self, fg_color="transparent")
+        root.pack(fill="both", expand=True, padx=24, pady=20)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        header = ctk.CTkFrame(root, fg_color="transparent")
+        header.pack(fill="x", pady=(0, 12))
+
+        # Title block
+        self.title_lbl = ctk.CTkLabel(
+            header, text="⛏  FlowwwClient",
+            font=ctk.CTkFont(size=24, weight="bold"),
+            text_color=self.theme["ACCENT"],
+        )
+        self.title_lbl.pack(side="left", anchor="s")
+        ctk.CTkLabel(
+            header,
+            text="   Fabric enabled, performance optimised launcher for Minecraft",
+            font=ctk.CTkFont(size=11),
+            text_color=TEXT_LABEL,
+        ).pack(side="left", anchor="s", pady=(0, 3))
+
+        # Auth block (right side)
+        auth_block = ctk.CTkFrame(header, fg_color="transparent")
+        auth_block.pack(side="right", anchor="s")
+
+        # Auth mode toggle
+        mode_row = ctk.CTkFrame(auth_block, fg_color="transparent")
+        mode_row.pack(anchor="e", pady=(0, 4))
+        _section_label(mode_row, "Account").pack(side="left", padx=(0, 8))
+        self.auth_mode_var = ctk.StringVar(value=self.cfg.get("auth_mode", "offline"))
+        self.auth_mode_menu = ctk.CTkSegmentedButton(
+            mode_row,
+            values=["Offline", "Microsoft"],
+            variable=self.auth_mode_var,
+            command=self._on_auth_mode_changed,
+            font=ctk.CTkFont(size=11),
+            selected_color=GREEN,
+            selected_hover_color=GREEN_DARK,
+            unselected_color=BG_SECONDARY,
+            unselected_hover_color="#1e293b",
+        )
+        self.auth_mode_menu.pack(side="left")
+        self.auth_mode_var.set(self.cfg.get("auth_mode", "offline").title())
+
+        # Offline panel: username entry
+        self.offline_panel = ctk.CTkFrame(auth_block, fg_color="transparent")
+        self.username_var = ctk.StringVar(value=self.cfg.get("username", ""))
+        self.username_var.trace_add("write", self._on_username_changed)
+        ctk.CTkEntry(
+            self.offline_panel, textvariable=self.username_var,
+            placeholder_text="Enter username…", width=220,
+        ).pack(side="left")
+
+        # Microsoft panel: sign-in button / account label
+        self.ms_panel = ctk.CTkFrame(auth_block, fg_color="transparent")
+        self.ms_signin_btn = ctk.CTkButton(
+            self.ms_panel, text="  Sign in with Microsoft",
+            fg_color=MS_BLUE, hover_color=MS_BLUE_DARK,
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            width=220, height=32,
+            command=self._on_ms_signin,
+        )
+        self.ms_loggedin_frame = ctk.CTkFrame(self.ms_panel, fg_color="transparent")
+        self.ms_gamertag_lbl = ctk.CTkLabel(
+            self.ms_loggedin_frame, text="",
+            text_color=self.theme["ACCENT"],
+            font=ctk.CTkFont(size=13, weight="bold"),
+        )
+        self.ms_gamertag_lbl.pack(side="left", padx=(0, 8))
+        self.ms_signout_btn = ctk.CTkButton(
+            self.ms_loggedin_frame, text="Sign Out",
+            fg_color="transparent", border_width=1, border_color=BORDER_COL,
+            text_color=TEXT_MUTED, hover_color=BG_SECONDARY,
+            width=72, height=28,
+            font=ctk.CTkFont(size=11),
+            command=self._on_ms_signout,
+        )
+        self.ms_signout_btn.pack(side="left")
+        self._refresh_auth_panel()
+
+        # Divider
+        ctk.CTkFrame(root, height=1, fg_color=BORDER_COL).pack(fill="x", pady=(0, 14))
+
+        # ── Content (left + right columns) ────────────────────────────────────
+        content = ctk.CTkFrame(root, fg_color="transparent")
+        content.pack(fill="both", expand=True)
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        self._build_left(content)
+        self._build_right(content)
+
+    def _build_left(self, parent):
+        left = ctk.CTkFrame(parent, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.rowconfigure(1, weight=1)
+
+        # Profile header row
+        ph = ctk.CTkFrame(left, fg_color="transparent")
+        ph.pack(fill="x", pady=(0, 6))
+        _section_label(ph, "Profiles").pack(side="left")
+        self.settings_btn = ctk.CTkButton(
+            ph, text="⚙ Settings", width=90,
+            fg_color="transparent", border_width=1, border_color=TEXT_MUTED,
+            text_color=TEXT_MUTED, hover_color=BG_SECONDARY,
+            command=self._on_open_settings,
+        )
+        self.settings_btn.pack(side="right", padx=(6, 0))
+        self.del_btn = ctk.CTkButton(
+            ph, text="Delete", width=72,
+            fg_color="transparent", border_width=1, border_color=RED,
+            text_color=RED, hover_color=RED,
+            command=self._on_delete_profile,
+        )
+        self.del_btn.pack(side="right", padx=(6, 0))
+        self.new_btn = ctk.CTkButton(
+            ph, text="+ New", width=72,
+            fg_color="transparent", border_width=1, border_color=BLUE,
+            text_color=BLUE, hover_color=BLUE,
+            command=self._on_new_profile,
+        )
+        self.new_btn.pack(side="right")
+
+        # Profile list (scrollable frame with radio-style selection)
+        self.profile_list_frame = ctk.CTkScrollableFrame(
+            left, label_text="", fg_color=BG_SECONDARY,
+            border_color=BORDER_COL, border_width=1,
+        )
+        self.profile_list_frame.pack(fill="both", expand=True, pady=(0, 8))
+
+        # Info card
+        self.info_card = ctk.CTkFrame(
+            left, fg_color=BG_SECONDARY,
+            border_color=BORDER_COL, border_width=1, corner_radius=6,
+        )
+        self.info_card.pack(fill="x", pady=(0, 8))
+        self.info_version_lbl = ctk.CTkLabel(
+            self.info_card, text="", text_color=TEXT_MUTED, font=ctk.CTkFont(size=12),
+        )
+        self.info_version_lbl.pack(anchor="w", padx=12, pady=(8, 0))
+        self.info_mods_lbl = ctk.CTkLabel(
+            self.info_card, text="", text_color=TEXT_MUTED, font=ctk.CTkFont(size=12),
+            wraplength=380, justify="left",
+        )
+        self.info_mods_lbl.pack(anchor="w", padx=12, pady=(2, 8))
+
+        # RAM slider
+        ram_row = ctk.CTkFrame(left, fg_color="transparent")
+        ram_row.pack(fill="x", pady=(0, 4))
+        self.ram_label_lbl = _section_label(ram_row, f"RAM — {self.cfg.get('ram_gb', 2)} GB")
+        self.ram_label_lbl.pack(side="left")
+        system_ram = _get_system_ram_gb()
+        self.ram_var = ctk.IntVar(value=self.cfg.get("ram_gb", 2))
+        self.ram_slider = ctk.CTkSlider(
+            left, from_=1, to=system_ram, number_of_steps=max(1, system_ram - 1),
+            variable=self.ram_var, command=self._on_ram_changed,
+            progress_color=GREEN, fg_color=BG_SECONDARY,
+            button_color=GREEN, button_hover_color=GREEN_DARK,
+        )
+        self.ram_slider.pack(fill="x", pady=(0, 10))
+
+        # Single smart Play / Install & Play button
+        self.play_btn = ctk.CTkButton(
+            left, text="▶  PLAY",
+            fg_color=GREEN, text_color=BG_PRIMARY,
+            hover_color=GREEN_DARK, font=ctk.CTkFont(size=15, weight="bold"),
+            height=44, command=self._on_play_btn,
+        )
+        self.play_btn.pack(fill="x")
+
+        self._profile_buttons: list[ctk.CTkFrame] = []
+        self._refresh_profile_list()
+
+    def _build_right(self, parent):
+        right = ctk.CTkFrame(parent, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        right.rowconfigure(1, weight=1)
+
+        _section_label(right, "Console").pack(anchor="w", pady=(0, 4))
+
+        self.log_box = ctk.CTkTextbox(
+            right, state="disabled",
+            fg_color=BG_CONSOLE, border_color=BORDER_COL, border_width=1,
+            font=ctk.CTkFont(family="monospace", size=11),
+            text_color="#a0aec0",
+        )
+        self.log_box.pack(fill="both", expand=True, pady=(0, 8))
+
+        self.progress_bar = ctk.CTkProgressBar(
+            right, progress_color=GREEN, fg_color=BG_SECONDARY,
+        )
+        self.progress_bar.set(0)
+        self.progress_bar.pack(fill="x", pady=(0, 4))
+
+        self.status_lbl = ctk.CTkLabel(
+            right, text="Ready.", text_color=TEXT_LABEL,
+            font=ctk.CTkFont(size=11), anchor="w",
+        )
+        self.status_lbl.pack(anchor="w")
+
+    # ── Version loading ────────────────────────────────────────────────────────
+
+    def _load_versions(self):
+        self._log("🌐 Fetching Minecraft versions…")
+
+        def _task():
+            try:
+                all_v = fetch_release_versions()
+                self.all_versions = [v["id"] for v in all_v]
+                self.after(0, lambda: self._log(f"✅ {len(self.all_versions)} total MC releases found."))
+            except Exception as e:
+                self.after(0, lambda: self._log(f"❌ Could not fetch MC versions: {e}"))
+
+            try:
+                self.fabric_versions = fetch_fabric_versions()
+                self.after(0, lambda: self._log(f"✅ {len(self.fabric_versions)} versions supported by Fabric."))
+            except Exception as e:
+                self.after(0, lambda: self._log(f"❌ Could not fetch Fabric versions: {e}"))
+
+            self.after(0, self._maybe_create_default_profiles)
+            self.after(0, self._auto_update_latest_profiles)
+            self.after(0, self._refresh_buttons)
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _maybe_create_default_profiles(self):
+        """On first launch, auto-create two default profiles."""
+        if not self.cfg.get("first_run", True):
+            return
+        if self.cfg.get("profiles"):
+            # Already has profiles — not first run
+            self.cfg["first_run"] = False
+            config.save(self.cfg)
+            return
+
+        profiles_created = []
+
+        # 1. "Latest Release Vanilla" — latest MC version
+        if self.all_versions:
+            vanilla_profile = {
+                "name": "Latest Release Vanilla",
+                "mc_version": self.all_versions[0],
+                "type": "vanilla",
+                "mods": [],
+            }
+            profiles_created.append(vanilla_profile)
+
+        # 2. "Latest Release Fabric" — latest Fabric-supported version
+        if self.fabric_versions:
+            fabric_profile = {
+                "name": "Latest Release Fabric",
+                "mc_version": self.fabric_versions[0],
+                "type": "fabric",
+                "mods": list(AVAILABLE_MODS.keys()),
+            }
+            profiles_created.append(fabric_profile)
+
+        if profiles_created:
+            self.cfg.setdefault("profiles", []).extend(profiles_created)
+            self.cfg["active_profile"] = profiles_created[0]["name"]
+            self.cfg["first_run"] = False
+            config.save(self.cfg)
+            self._refresh_profile_list()
+            for p in profiles_created:
+                self._log(f"✅ Default profile created: '{p['name']}' ({p['mc_version']}, {p['type']})")
+        else:
+            self.cfg["first_run"] = False
+            config.save(self.cfg)
+
+    def _auto_update_latest_profiles(self):
+        """Silently keep 'Latest Release' profiles on the newest MC version.
+
+        Runs every startup after version lists are fetched.
+        - If a Latest Release profile exists but is stale, update its mc_version.
+        - If a Latest Release profile was deleted, re-create it only when a
+          genuinely NEW MC version has dropped since it was last seen.
+        - Completely silent: no console output, no user notifications.
+        """
+        if not self.all_versions:
+            return  # no version data available (offline?)
+
+        latest_vanilla = self.all_versions[0]
+        latest_fabric  = self.fabric_versions[0] if self.fabric_versions else None
+        profiles       = self.cfg.setdefault("profiles", [])
+        changed        = False
+
+        # ── Vanilla ───────────────────────────────────────────────────────────
+        vanilla_profile    = next((p for p in profiles if p["name"] == "Latest Release Vanilla"), None)
+        prev_known_vanilla = self.cfg.get("last_known_latest_vanilla")
+
+        if vanilla_profile:
+            if vanilla_profile["mc_version"] != latest_vanilla:
+                vanilla_profile["mc_version"] = latest_vanilla
+                changed = True
+        else:
+            # Only re-create when a NEW version has appeared since last seen
+            if latest_vanilla != prev_known_vanilla:
+                profiles.append({
+                    "name": "Latest Release Vanilla",
+                    "mc_version": latest_vanilla,
+                    "type": "vanilla",
+                    "mods": [],
+                })
+                changed = True
+
+        self.cfg["last_known_latest_vanilla"] = latest_vanilla
+
+        # ── Fabric ────────────────────────────────────────────────────────────
+        if latest_fabric:
+            fabric_profile    = next((p for p in profiles if p["name"] == "Latest Release Fabric"), None)
+            prev_known_fabric = self.cfg.get("last_known_latest_fabric")
+
+            if fabric_profile:
+                if fabric_profile["mc_version"] != latest_fabric:
+                    fabric_profile["mc_version"] = latest_fabric
+                    changed = True
+            else:
+                if latest_fabric != prev_known_fabric:
+                    profiles.append({
+                        "name": "Latest Release Fabric",
+                        "mc_version": latest_fabric,
+                        "type": "fabric",
+                        "mods": list(AVAILABLE_MODS.keys()),
+                    })
+                    changed = True
+
+            self.cfg["last_known_latest_fabric"] = latest_fabric
+
+        # ── Persist ───────────────────────────────────────────────────────────
+        config.save(self.cfg)  # always persist the tracking keys
+        if changed:
+            self._refresh_profile_list()
+
+    # ── Profiles ──────────────────────────────────────────────────────────────
+
+    def _refresh_profile_list(self):
+        # Destroy old widgets
+        for w in self.profile_list_frame.winfo_children():
+            w.destroy()
+        self._profile_buttons = []
+
+        profiles = self.cfg.get("profiles", [])
+        active   = self.cfg.get("active_profile")
+
+        for i, p in enumerate(profiles):
+            type_tag = "🟢 Fabric" if p["type"] == "fabric" else "🍦 Vanilla"
+            label    = f"{p['name']}\n{p['mc_version']}  ·  {type_tag}"
+            is_active = p["name"] == active
+
+            btn = ctk.CTkButton(
+                self.profile_list_frame,
+                text=label,
+                anchor="w",
+                fg_color=self.theme["ACCENT"] if is_active else self.theme["BG_SECONDARY"],
+                text_color=self.theme["BG_PRIMARY"] if is_active else self.theme["TEXT_FG"],
+                hover_color=self.theme["ACCENT_DARK"] if is_active else "#1e293b",
+                font=ctk.CTkFont(size=12),
+                command=lambda idx=i: self._on_profile_selected(idx),
+            )
+            btn.pack(fill="x", pady=2, padx=4)
+            self._profile_buttons.append(btn)
+
+        # Restore selection
+        if active:
+            for i, p in enumerate(profiles):
+                if p["name"] == active:
+                    self._selected_profile_idx = i
+                    self._update_info_card(p)
+                    break
+        self._refresh_buttons()
+
+    def _current_profile(self) -> dict | None:
+        profiles = self.cfg.get("profiles", [])
+        i = self._selected_profile_idx
+        return profiles[i] if 0 <= i < len(profiles) else None
+
+    def _on_profile_selected(self, idx: int):
+        profiles = self.cfg.get("profiles", [])
+        if 0 <= idx < len(profiles):
+            self._selected_profile_idx = idx
+            self.cfg["active_profile"] = profiles[idx]["name"]
+            config.save(self.cfg)
+            self._update_info_card(profiles[idx])
+            # Recolour buttons
+            for i, btn in enumerate(self._profile_buttons):
+                if i == idx:
+                    btn.configure(fg_color=self.theme["ACCENT"], text_color=self.theme["BG_PRIMARY"], hover_color=self.theme["ACCENT_DARK"])
+                else:
+                    btn.configure(fg_color=self.theme["BG_SECONDARY"], text_color=self.theme["TEXT_FG"], hover_color="#1e293b")
+        self._refresh_buttons()
+
+    def _update_info_card(self, profile: dict):
+        self.info_version_lbl.configure(
+            text=f"MC {profile['mc_version']}  ·  {'Fabric' if profile['type'] == 'fabric' else 'Vanilla'}"
+        )
+        if profile["type"] == "fabric":
+            mods   = profile.get("mods", [])
+            labels = [AVAILABLE_MODS[m]["label"] for m in mods if m in AVAILABLE_MODS]
+            self.info_mods_lbl.configure(text="Mods: " + (", ".join(labels) if labels else "none"))
+        else:
+            self.info_mods_lbl.configure(text="No mods installed")
+
+    def _on_new_profile(self):
+        if not self.all_versions:
+            self._log("⚠  Still loading versions, try again in a moment.")
+            return
+        existing_names = {p["name"] for p in self.cfg.get("profiles", [])}
+        dlg = NewProfileDialog(self, self.all_versions, self.fabric_versions,
+                               existing_profile_names=existing_names)
+        profile = dlg.result
+        if not profile:
+            return
+        if not profile.get("name"):
+            self._log("⚠  Profile name cannot be empty.")
+            return
+        if any(p["name"] == profile["name"] for p in self.cfg.get("profiles", [])):
+            self._log(f"⚠  A profile named '{profile['name']}' already exists.")
+            return
+        self.cfg.setdefault("profiles", []).append(profile)
+        self.cfg["active_profile"] = profile["name"]
+        config.save(self.cfg)
+        self._refresh_profile_list()
+        self._log(f"✅ Profile '{profile['name']}' created  ({profile['mc_version']}, {profile['type']}).")
+
+    def _on_delete_profile(self):
+        profile = self._current_profile()
+        if not profile:
+            return
+        if not messagebox.askyesno("Delete Profile", f"Delete '{profile['name']}'?", parent=self):
+            return
+        self.cfg["profiles"] = [
+            p for p in self.cfg.get("profiles", []) if p["name"] != profile["name"]
+        ]
+        if self.cfg.get("active_profile") == profile["name"]:
+            self.cfg["active_profile"] = None
+        self._selected_profile_idx = -1
+        config.save(self.cfg)
+        self._refresh_profile_list()
+        self._log(f"🗑  Deleted '{profile['name']}'.")
+
+    # ── Install & Play (unified) ───────────────────────────────────────────────
+
+    def _is_installed_for_profile(self, profile: dict) -> bool:
+        """Return True only when the version is installed with the *same* type (fabric/vanilla)."""
+        entry = self.cfg.get("installed_versions", {}).get(profile["mc_version"])
+        if not entry:
+            return False
+        return entry.get("type") == profile["type"]
+
+    def _on_play_btn(self):
+        profile = self._current_profile()
+        if not profile:
+            return
+
+        is_ms = self.auth_mode_var.get() == "Microsoft"
+        auth_data = None
+
+        if is_ms:
+            if not self._ms_account:
+                self._log("⚠  Please sign in with Microsoft before playing.")
+                return
+            username = self._ms_account["name"]
+            auth_data = self._ms_account
+        else:
+            username = self.username_var.get().strip()
+            if not username:
+                self._log("⚠  Please enter a username before playing.")
+                return
+
+        mc_version   = profile["mc_version"]
+        profile_type = profile["type"]
+        enabled_mods = profile.get("mods", [])
+        ram_gb       = self.ram_var.get()
+        use_dgpu     = self.cfg.get("use_dgpu", False)
+        needs_install = not self._is_installed_for_profile(profile)
+
+        self._set_busy(True)
+        self._log(f"\n{'─'*40}")
+        if needs_install:
+            self._log(f"📦 Installing '{profile['name']}' ({mc_version}, {profile_type})…")
+        else:
+            self._log(f"🚀 Launching '{profile['name']}'…")
+
+        def worker():
+            try:
+                fabric_profile_id = None
+
+                if needs_install:
+                    from core.java_manager import install_java
+                    java_ver = get_required_java_version(mc_version)
+                    install_java(
+                        java_ver,
+                        log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                        progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
+                    )
+                    install_minecraft(
+                        mc_version,
+                        log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                        progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
+                    )
+                    if profile_type == "fabric":
+                        fabric_profile_id = install_fabric(
+                            mc_version,
+                            log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                            progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
+                        )
+                        install_mods(
+                            mc_version, enabled_mods,
+                            log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                            progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
+                        )
+                    self.cfg.setdefault("installed_versions", {})[mc_version] = {
+                        "fabric_profile_id": fabric_profile_id,
+                        "type": profile_type,
+                    }
+                    config.save(self.cfg)
+                    self.after(0, lambda: self._log("✅ Installation complete — launching…"))
+                else:
+                    fabric_profile_id = (
+                        self.cfg.get("installed_versions", {})
+                        .get(mc_version, {})
+                        .get("fabric_profile_id")
+                    )
+
+                self.after(0, lambda: self._log("🚀 Starting game…"))
+                proc = launch(
+                    mc_version=mc_version,
+                    profile_type=profile_type,
+                    fabric_profile_id=fabric_profile_id,
+                    username=username,
+                    ram_gb=ram_gb,
+                    log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                    auth_data=auth_data,
+                    use_dgpu=use_dgpu,
+                )
+                self.after(0, lambda: self._log("🎮 Game launched!"))
+                for line in proc.stdout:
+                    self.after(0, lambda l=line: self._log(l.rstrip()))
+                proc.wait()
+                self.after(
+                    0,
+                    lambda: self._on_worker_done(True, f"Game exited (code {proc.returncode})"),
+                )
+            except Exception as e:
+                self.after(0, lambda err=e: self._on_worker_done(False, str(err)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _on_username_changed(self, *_):
+        text = self.username_var.get()
+        self.cfg["username"] = text
+        config.save(self.cfg)
+        self._refresh_buttons()
+
+    def _on_ram_changed(self, val):
+        gb = int(val)
+        self.cfg["ram_gb"] = gb
+        config.save(self.cfg)
+        self.ram_label_lbl.configure(text=f"RAM — {gb} GB")
+
+    def _refresh_buttons(self):
+        profile     = self._current_profile()
+        has_profile = profile is not None
+        installed   = has_profile and self._is_installed_for_profile(profile)
+
+        is_ms = self.auth_mode_var.get() == "Microsoft"
+        if is_ms:
+            has_identity = self._ms_account is not None
+        else:
+            has_identity = bool(self.username_var.get().strip())
+
+        if not has_profile:
+            btn_text  = "▶  PLAY"
+            state_play = "disabled"
+        elif not installed:
+            btn_text  = "⬇  Install & Play"
+            state_play = "normal" if has_identity else "disabled"
+        else:
+            btn_text  = "▶  PLAY"
+            state_play = "normal" if has_identity else "disabled"
+
+        self.play_btn.configure(text=btn_text, state=state_play)
+        self.del_btn.configure(state="normal" if has_profile else "disabled")
+
+    def _on_progress(self, task: str, pct: int):
+        self.progress_bar.set(pct / 100)
+        self.status_lbl.configure(text=f"{task}: {pct}%")
+
+    def _on_worker_done(self, success: bool, message: str):
+        self._set_busy(False)
+        self.progress_bar.set(1.0 if success else 0.0)
+        self._log(f"{'✅' if success else '❌'} {message}")
+        self.status_lbl.configure(text="Ready.")
+        self._refresh_buttons()
+
+    def _set_busy(self, busy: bool):
+        state = "disabled" if busy else "normal"
+        self.play_btn.configure(state=state)
+        self.new_btn.configure(state=state)
+        self.del_btn.configure(state=state)
+        if not busy:
+            self._refresh_buttons()  # restore correct label after busy clears
+
+    def _log(self, text: str):
+        self.log_box.configure(state="normal")
+        self.log_box.insert("end", text + "\n")
+        self.log_box.configure(state="disabled")
+        self.log_box.see("end")
+
+    # ── Settings & Theme ──────────────────────────────────────────────────────
+
+    def _on_open_settings(self):
+        dlg = SettingsDialog(self, self.theme, self.cfg)
+        if dlg.result:
+            self.theme = get_theme(self.cfg.get("theme", "overworld"))
+            self._apply_theme()
+
+    def _apply_theme(self):
+        t = self.theme
+        self.configure(fg_color=t["BG_PRIMARY"])
+        self.title_lbl.configure(text_color=t["ACCENT"])
+        self.ms_gamertag_lbl.configure(text_color=t["ACCENT"])
+        self.auth_mode_menu.configure(
+            selected_color=t["ACCENT"], selected_hover_color=t["ACCENT_DARK"],
+            unselected_color=t["BG_SECONDARY"],
+        )
+        self.ms_signin_btn.configure(fg_color=t["MS_BLUE"], hover_color=t["MS_BLUE_DARK"])
+        self.profile_list_frame.configure(fg_color=t["BG_SECONDARY"], border_color=t["BORDER_COL"])
+        self.info_card.configure(fg_color=t["BG_SECONDARY"], border_color=t["BORDER_COL"])
+        self.ram_slider.configure(
+            progress_color=t["ACCENT"], fg_color=t["BG_SECONDARY"],
+            button_color=t["ACCENT"], button_hover_color=t["ACCENT_DARK"],
+        )
+        self.play_btn.configure(
+            fg_color=t["ACCENT"], text_color=t["BG_PRIMARY"], hover_color=t["ACCENT_DARK"],
+        )
+        self.log_box.configure(fg_color=t["BG_CONSOLE"], border_color=t["BORDER_COL"])
+        self.progress_bar.configure(progress_color=t["ACCENT"], fg_color=t["BG_SECONDARY"])
+        self.new_btn.configure(
+            border_color=t["ACCENT_ALT"], text_color=t["ACCENT_ALT"], hover_color=t["ACCENT_ALT"],
+        )
+        self._refresh_profile_list()
+
+    # ── Microsoft Auth UI ─────────────────────────────────────────────────────
+
+    def _on_auth_mode_changed(self, value: str):
+        # Always store lowercase so _try_restore_session comparison is consistent
+        mode = value.lower()
+        self.cfg["auth_mode"] = mode
+        config.save(self.cfg)
+        self._refresh_auth_panel()
+        self._refresh_buttons()
+
+    def _refresh_auth_panel(self):
+        is_ms = self.auth_mode_var.get().lower() == "microsoft"
+        if is_ms:
+            self.offline_panel.pack_forget()
+            self.ms_panel.pack(anchor="e")
+            self._refresh_ms_state()
+        else:
+            self.ms_panel.pack_forget()
+            self.offline_panel.pack(anchor="e")
+
+    def _refresh_ms_state(self):
+        if self._ms_account:
+            self.ms_signin_btn.pack_forget()
+            self.ms_loggedin_frame.pack(anchor="e")
+            self.ms_gamertag_lbl.configure(text=f"🟢  {self._ms_account['name']}")
+        else:
+            self.ms_loggedin_frame.pack_forget()
+            self.ms_signin_btn.pack(anchor="e")
+            self.ms_signin_btn.configure(text="  Sign in with Microsoft", state="normal")
+
+    def _on_ms_signin(self):
+        self.ms_signin_btn.configure(text="  Waiting for browser…", state="disabled")
+        self._log(f"\n{'─'*40}")
+
+        def on_success(login_data: dict):
+            def _update():
+                self._ms_account = login_data
+                self._refresh_auth_panel()
+                self._refresh_buttons()
+            self.after(0, _update)
+
+        def on_error(message: str):
+            def _update():
+                self._log(f"❌ {message}")
+                self._refresh_ms_state()
+                self._refresh_buttons()
+            self.after(0, _update)
+
+        auth.start_login(
+            log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
+            on_success=on_success,
+            on_error=on_error,
+        )
+
+    def _on_ms_signout(self):
+        auth.logout(log=self._log)
+        self._ms_account = None
+        self._refresh_auth_panel()
+        self._refresh_buttons()
+
+    def _try_restore_session(self):
+        # Normalize stored auth_mode — could be "microsoft" or "Microsoft"
+        # depending on whether it was saved by the toggle or by _save_account()
+        stored_mode = self.cfg.get("auth_mode", "offline").lower()
+        if stored_mode != "microsoft":
+            return
+        account = auth.get_stored_account()
+        if not account:
+            # auth_mode says microsoft but no account stored — reset to offline
+            self.cfg["auth_mode"] = "offline"
+            config.save(self.cfg)
+            self.after(0, lambda: self.auth_mode_var.set("Offline"))
+            self.after(0, self._refresh_auth_panel)
+            return
+
+        def _task():
+            refreshed = auth.try_refresh(
+                log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
+            )
+            if refreshed:
+                def _update():
+                    self._ms_account = refreshed
+                    self._refresh_auth_panel()
+                    self._refresh_buttons()
+                self.after(0, _update)
+            else:
+                # Refresh failed — reset auth_mode to offline so the UI
+                # is consistent and the user knows they need to sign in again
+                def _update():
+                    self.cfg["auth_mode"] = "offline"
+                    config.save(self.cfg)
+                    self.auth_mode_var.set("Offline")
+                    self._refresh_auth_panel()
+                    self._refresh_buttons()
+                self.after(0, _update)
+
+        threading.Thread(target=_task, daemon=True).start()
