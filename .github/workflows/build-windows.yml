@@ -46,9 +46,29 @@ jobs:
           if (-not (Test-Path .\dist\FlowwwClient.exe -PathType Leaf)) {
             throw "PyInstaller did not create dist/FlowwwClient.exe"
           }
-          & .\dist\FlowwwClient.exe --smoke-test
-          if ($LASTEXITCODE -ne 0) {
-            throw "FlowwwClient.exe smoke test failed with exit code $LASTEXITCODE"
+          $executable = (Resolve-Path .\dist\FlowwwClient.exe).Path
+
+          $stdout = Join-Path $env:RUNNER_TEMP "FlowwwClient-smoke.stdout"
+          $stderr = Join-Path $env:RUNNER_TEMP "FlowwwClient-smoke.stderr"
+          $process = Start-Process `
+            -FilePath $executable `
+            -ArgumentList "--smoke-test" `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr
+
+          if (Test-Path $stdout) {
+            Get-Content $stdout
+          }
+          if (Test-Path $stderr) {
+            Get-Content $stderr | Write-Output
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "FlowwwClient.exe smoke test failed with exit code $($process.ExitCode)"
+          }
+          if (-not (Select-String -Path $stdout -Pattern "SMOKE TEST PASSED" -Quiet)) {
+            throw "FlowwwClient.exe did not report that its smoke test passed"
           }
 
       - name: Package Windows ZIP
