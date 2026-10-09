@@ -9,7 +9,7 @@ if "--smoke-test" in sys.argv:
     _failed = []
     _modules = [
         "core.auth", "core.config", "core.installer",
-        "core.launcher", "core.java_manager", "core.updater",
+        "core.launcher", "core.java_manager", "core.modrinth", "core.updater",
         "ui.main_window", "ui.theme",
         "customtkinter", "certifi",
         "minecraft_launcher_lib",
@@ -21,11 +21,13 @@ if "--smoke-test" in sys.argv:
         except Exception as _e:
             _failed.append(f"{_mod}: {_e}")
     if _failed:
-        print("SMOKE TEST FAILED:")
-        for _f in _failed:
-            print(f"  {_f}")
+        if sys.stderr is not None:
+            print("SMOKE TEST FAILED:", file=sys.stderr)
+            for _f in _failed:
+                print(f"  {_f}", file=sys.stderr)
         sys.exit(1)
-    print("SMOKE TEST PASSED")
+    if sys.stdout is not None:
+        print("SMOKE TEST PASSED")
     sys.exit(0)
 # ─────────────────────────────────────────────────────────────────────────────
 

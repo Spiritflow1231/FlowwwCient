@@ -1,7 +1,19 @@
-import sys
+import os
 import re
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
+import sys
+from PyInstaller.utils.hooks import collect_all
+
+PROJECT_ROOT = Path(SPECPATH).resolve()
+DEBUG_BUILD = os.environ.get("FLOWWWCLIENT_DEBUG", "").lower() in {"1", "true", "yes"}
+BUILD_NAME = "FlowwwClient-debug" if DEBUG_BUILD else "FlowwwClient"
+
+# Fail before analysis when the selected Python installation cannot build the
+# Tkinter UI. This avoids producing an apparently successful but unusable app.
+try:
+    import tkinter
+except ImportError as exc:
+    raise RuntimeError("Tkinter is required to build FlowwwClient; install the OS Tkinter package.") from exc
 
 # ---------------------------------------------------------------------------
 # Auto-collect every package listed in requirements.txt.
@@ -11,7 +23,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, coll
 auto_datas      = []
 auto_hiddenimps = []
 
-_req_text = Path('requirements.txt').read_text()
+_req_text = (PROJECT_ROOT / "requirements.txt").read_text(encoding="utf-8")
 for line in _req_text.splitlines():
     line = line.strip()
     if not line or line.startswith('#'):
@@ -26,11 +38,11 @@ for line in _req_text.splitlines():
         auto_hiddenimps += h
         print(f'[spec] collected {import_name}: {len(h)} hidden imports, {len(d)} data files')
     except Exception as exc:
-        print(f'[spec] WARNING: could not collect {import_name}: {exc}')
+        raise RuntimeError(f'Could not collect required dependency {import_name}: {exc}') from exc
 
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    [str(PROJECT_ROOT / "main.py")],
+    pathex=[str(PROJECT_ROOT)],
     binaries=[],
     datas=auto_datas,
     hiddenimports=[
@@ -39,6 +51,7 @@ a = Analysis(
         'core.auth',
         'core.updater',
         'core.installer',
+        'core.modrinth',
         'core.launcher',
         'core.config',
         'core.java_manager',
@@ -57,8 +70,8 @@ pyz = PYZ(a.pure)
 
 if sys.platform == 'darwin':
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
-              name='FlowwwClient', debug=False, strip=True, upx=False,
-              console=False, windowed=True, target_arch='universal2')
+              name=BUILD_NAME, debug=DEBUG_BUILD, strip=True, upx=False,
+              console=DEBUG_BUILD, windowed=not DEBUG_BUILD, target_arch='universal2')
     coll = COLLECT(exe, a.binaries, a.datas, strip=True, upx=False, name='FlowwwClient')
     app = BUNDLE(coll, name='FlowwwClient.app',
                  bundle_identifier='com.flowwwclient.launcher',
@@ -70,11 +83,11 @@ if sys.platform == 'darwin':
                  })
 elif sys.platform.startswith('linux'):
     exe = EXE(pyz, a.scripts, [], exclude_binaries=True,
-              name='FlowwwClient', debug=False, strip=True, upx=False,
-              console=False)
+              name=BUILD_NAME, debug=DEBUG_BUILD, strip=True, upx=False,
+              console=DEBUG_BUILD)
     coll = COLLECT(exe, a.binaries, a.datas, strip=True, upx=False, name='FlowwwClient')
 else:
     exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
-              name='FlowwwClient', debug=False, strip=False, upx=True,
-              console=False, windowed=True,
-              disable_windowed_traceback=True, icon=None)
+              name=BUILD_NAME, debug=DEBUG_BUILD, strip=False, upx=False,
+              console=DEBUG_BUILD, windowed=not DEBUG_BUILD,
+              disable_windowed_traceback=not DEBUG_BUILD, icon=None)

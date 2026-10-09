@@ -15,8 +15,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import tempfile
 
-CURRENT_VERSION = "v1.0.8"
-REPO_URL = "https://api.github.com/repos/revolution737/RevoMC/releases/latest"
+CURRENT_VERSION = "v1.0.9"
+REPO_URL = "https://api.github.com/repos/Spiritflow1231/FlowwwCient/releases/latest"
 
 def parse_version(v):
     return tuple(map(int, v.lstrip("v").split(".")))
@@ -49,7 +49,7 @@ def check_and_update():
         sys_os = platform.system().lower()
         asset_name = ""
         if sys_os == "windows":
-            asset_name = "RevoMC-windows.zip"
+            asset_name = "FlowwwClient.exe"
         elif sys_os == "darwin":
             asset_name = "RevoMC-macos.zip"
         else:
@@ -99,7 +99,10 @@ def check_and_update():
     def download_and_install():
         try:
             temp_dir = tempfile.mkdtemp()
-            zip_path = os.path.join(temp_dir, "update.zip")
+            download_path = os.path.join(
+                temp_dir,
+                "FlowwwClient.exe" if sys_os == "windows" else "update.zip",
+            )
 
             def report(count, block_size, total_size):
                 if total_size > 0:
@@ -107,21 +110,21 @@ def check_and_update():
                     progress_bar['value'] = min(100, percent)
                     progress_win.update_idletasks()
 
-            urllib.request.urlretrieve(asset_url, zip_path, reporthook=report)
+            urllib.request.urlretrieve(asset_url, download_path, reporthook=report)
 
-            # Extract
-            tk.Label(progress_win, text="Extracting...").pack()
-            extract_dir = os.path.join(temp_dir, "extracted")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
+            if sys_os != "windows":
+                tk.Label(progress_win, text="Extracting...").pack()
+                extract_dir = os.path.join(temp_dir, "extracted")
+                with zipfile.ZipFile(download_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
 
             current_exe = sys.executable
             import shutil
 
             if sys_os == "windows":
-                new_exe = os.path.join(extract_dir, "RevoMC.exe")
+                new_exe = download_path
                 if not os.path.exists(new_exe):
-                    raise Exception("RevoMC.exe not found in downloaded zip.")
+                    raise Exception("FlowwwClient.exe not found in the downloaded release.")
 
                 # Validate the new binary
                 tk.Label(progress_win, text="Validating new version...").pack()

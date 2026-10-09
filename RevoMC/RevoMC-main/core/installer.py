@@ -287,13 +287,29 @@ def install_minecraft(mc_version: str, log: Callable, progress: Callable) -> dic
     return version_json
 
 
-def install_fabric(mc_version: str, log: Callable, progress: Callable) -> str:
+def install_fabric(
+    mc_version: str, log: Callable, progress: Callable,
+    loader_version: Optional[str] = None,
+) -> str:
     base = get_launcher_dir()
     log(f"🔍 Fetching latest Fabric loader for {mc_version}…")
     loaders = _get(f"{FABRIC_META}/versions/loader/{mc_version}")
     if not loaders:
         raise RuntimeError(f"No Fabric loader found for MC {mc_version}")
-    loader_ver = loaders[0]["loader"]["version"]
+    available_loaders = [
+        entry.get("loader", {}).get("version")
+        for entry in loaders
+        if isinstance(entry, dict)
+        and isinstance(entry.get("loader"), dict)
+        and isinstance(entry["loader"].get("version"), str)
+    ]
+    if not available_loaders:
+        raise RuntimeError(f"Fabric returned no valid loader versions for Minecraft {mc_version}.")
+    if loader_version and loader_version not in available_loaders:
+        raise RuntimeError(
+            f"Fabric loader {loader_version} is not available for Minecraft {mc_version}."
+        )
+    loader_ver = loader_version or available_loaders[0]
     profile_id = f"fabric-loader-{loader_ver}-{mc_version}"
 
     profile_dir = base / "versions" / profile_id
@@ -395,7 +411,8 @@ def _install_single_mod(
 
 
 def install_mods(
-    mc_version: str, enabled_mods: list[str], log: Callable, progress: Callable
+    mc_version: str, enabled_mods: list[str], log: Callable, progress: Callable,
+    mods_dir: Optional[Path] = None,
 ) -> list[str]:
     """Download Fabric API + enabled mods from Modrinth.
 
@@ -405,11 +422,8 @@ def install_mods(
 
     enabled_mods is a list of keys from AVAILABLE_MODS e.g. ["sodium", "iris"]
     """
-    mods_dir = get_mods_dir(mc_version)
+    mods_dir = mods_dir or get_mods_dir(mc_version)
     mods_dir.mkdir(parents=True, exist_ok=True)
-
-    for f in mods_dir.glob("*.jar"):
-        f.unlink()
 
     # Maps AVAILABLE_MODS key → pinned Modrinth version_id.
     # Populated as each mod is installed; consulted before fetching the next.

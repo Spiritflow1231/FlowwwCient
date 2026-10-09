@@ -1,7 +1,8 @@
 """
 core/java_manager.py
 Downloads and manages bundled JREs so the user never needs Java installed.
-Supports Java 8 (MC ≤1.16), Java 21 (MC 1.17–1.21.3), Java 25 (MC 1.21.4+).
+Supports Java 8 (MC ≤1.16), Java 17 (MC 1.17–1.20.4), Java 21 (MC 1.20.5–1.21.x),
+and Java 25 (MC 26+).
 Uses Adoptium (Eclipse Temurin) releases.
 """
 
@@ -41,8 +42,9 @@ def get_required_java_version(mc_version: str) -> int:
     """
     Determine which Java version a Minecraft version requires.
       - MC 1.16.x and below  → Java 8
-      - MC 1.17 – 1.21.3     → Java 21
-      - MC 1.21.4+ and 26.x+ → Java 25
+      - MC 1.17 – 1.20.4     → Java 17
+      - MC 1.20.5 – 1.21.x   → Java 21
+      - MC 26.x and later    → Java 25
     """
     v = _parse_mc_version(mc_version)
 
@@ -50,12 +52,19 @@ def get_required_java_version(mc_version: str) -> int:
     if v < (1, 17, 0):
         return 8
 
-    # 1.17 through 1.21.3 → Java 21
-    if v <= (1, 21, 3):
+    # Minecraft 1.17 through 1.20.4 requires Java 17.
+    if v[0] == 1 and v < (1, 20, 5):
+        return 17
+
+    # Minecraft 26 introduced the new version scheme and Java 25.
+    if v[0] >= 26:
+        return 25
+
+    # Minecraft 1.20.5 through 1.21.x requires Java 21.
+    if v[0] == 1:
         return 21
 
-    # 1.21.4+ and everything 26.x+ → Java 25
-    return 25
+    raise ValueError(f"Unsupported Minecraft version: {mc_version}")
 
 
 # ── Runtime paths ─────────────────────────────────────────────────────────────

@@ -1,0 +1,78 @@
+name: Build FlowwwClient for Windows
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: RevoMC/RevoMC-main
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Compile application and tests
+        run: python -m compileall -q main.py core ui tests
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Build Windows application
+        run: |
+          python -m PyInstaller revomc.spec --clean --noconfirm --distpath dist --workpath build/pyinstaller-windows
+
+      - name: Verify and smoke-test executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path .\dist\FlowwwClient.exe -PathType Leaf)) {
+            throw "PyInstaller did not create dist/FlowwwClient.exe"
+          }
+          & .\dist\FlowwwClient.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "FlowwwClient.exe smoke test failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Package Windows ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path .\dist\FlowwwClient.exe -DestinationPath .\dist\FlowwwClient-Windows.zip -CompressionLevel Optimal
+          if (-not (Test-Path .\dist\FlowwwClient-Windows.zip -PathType Leaf)) {
+            throw "The Windows ZIP package was not created"
+          }
+
+      - name: Verify Windows ZIP package
+        run: |
+          python -c "from zipfile import ZipFile; archive = ZipFile('dist/FlowwwClient-Windows.zip'); assert archive.namelist() == ['FlowwwClient.exe']; assert archive.testzip() is None"
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowwwClient-Windows-EXE
+          path: RevoMC/RevoMC-main/dist/FlowwwClient.exe
+          if-no-files-found: error
+
+      - name: Upload Windows ZIP package
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowwwClient-Windows-ZIP
+          path: RevoMC/RevoMC-main/dist/FlowwwClient-Windows.zip
+          if-no-files-found: error

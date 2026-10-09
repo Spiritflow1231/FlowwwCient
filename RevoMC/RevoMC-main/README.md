@@ -18,10 +18,13 @@ RevoMC is simply as good as vanilla Minecraft gets.
 - 🟢 Iris Shaders (shader pack support)
 - 🟢 Lithium (server-side logic optimisation)
 - 🟢 FerriteCore (RAM usage reduction)
-- 🟢 Auto-downloads Java (Java 8/21/25 based on MC version) — no manual Java install needed
+- 🟢 Auto-downloads Java (Java 8/17/21/25 based on MC version) — no manual Java install needed
 - 🟢 Dedicated GPU Support: Automatically enables dGPU mode on hybrid graphics systems (Windows Registry & Linux Prime)
 - 🟢 Multiple profiles — run vanilla and modded side by side
 - 🟢 Per-profile mod toggles — enable or disable individual mods per profile
+- 🟢 Profile content manager with live Modrinth search for mods, resource packs, modpacks, datapacks, and shader packs
+- 🟢 Per-profile game directories for mods, resource packs, shaders, worlds, and settings
+- 🟢 Imports vanilla and Fabric `.mrpack` modpacks as separate isolated profiles
 - 🟢 Vanilla profiles support all MC versions including the latest
 - 🟢 Fabric profiles only show versions with confirmed Fabric support
 - 🟢 Automatic retry on failed downloads
@@ -72,6 +75,45 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Windows Executable Builds
+
+The project uses `main.py` as its application entry point and PyInstaller's
+`revomc.spec` to build a single-file Windows GUI executable. The spec
+collects dependency data and hidden imports from `requirements.txt`, including
+the CustomTkinter UI assets; the project does not currently include a custom
+application icon. The Windows release is windowed.
+
+To build locally on Windows:
+
+```powershell
+builds\build_windows.bat
+```
+
+The script uses Python 3.12 and writes the single-file executable to
+`dist/release/FlowwwClient.exe`. On Linux, `builds/build_linux.sh` builds the
+Linux app; it requires Python 3.12 with Tkinter installed.
+
+For a console-enabled troubleshooting executable, run this in PowerShell:
+
+```powershell
+$env:FLOWWWCLIENT_DEBUG = "1"
+python -m PyInstaller revomc.spec --clean --noconfirm --distpath dist/debug --workpath build/pyinstaller-debug
+Remove-Item Env:FLOWWWCLIENT_DEBUG
+```
+
+GitHub Actions builds and smoke-tests the release executable on a Windows
+runner. To download it, open the repository's **Actions** tab, select the
+latest successful **Build FlowwwClient for Windows** run, then download
+`FlowwwClient-Windows-EXE` for the executable or `FlowwwClient-Windows-ZIP`
+for the packaged copy. The executable itself is a single-file application;
+downloaded Java runtimes, Minecraft data, and launcher configuration are stored
+in the user's writable `~/.revomc` directory (not in the application
+installation directory).
+
+Pushing a `v*` tag runs the same checks and build and creates a **draft** GitHub
+Release containing `FlowwwClient.exe`. Review the draft on the repository's
+**Releases** page and publish it manually when it is ready.
+
 ---
 
 ## First Time Use
@@ -112,21 +154,19 @@ RevoMC stores launcher data in `~/.revomc/` and shares game files with the stand
 ├── runtime/              # Bundled Java JRE (auto-downloaded based on MC version)
 ├── versions/             # Vanilla + Fabric version profiles
 ├── libraries/            # Shared JARs for Minecraft and Fabric
-└── mods/                 # Downloaded mods per MC version
-    └── 1.21.1/
-        ├── sodium-*.jar
-        ├── iris-*.jar
-        ├── lithium-*.jar
-        └── ferritecore-*.jar
+└── instances/            # Isolated game data for each launcher profile
 
-~/.minecraft/             # Standard .minecraft folder
-├── assets/               # Game assets (sounds, textures) — RevcMC will not download these if you already have Minecraft
-├── saves/                # Your worlds
-├── screenshots/
+~/.revomc/instances/<profile-id>/  # Each profile's game directory
+├── mods/
 ├── resourcepacks/
 ├── shaderpacks/
-└── mods/                 # Mods copied here at launch time
+└── saves/                 # Profile-specific worlds and their datapacks
+
+~/.minecraft/             # Shared Minecraft assets and pre-existing worlds
+└── assets/               # Shared game assets
 ```
+
+Use a profile's **Edit** action to open its content manager. Mod and pack downloads are installed only into that profile's game directory. Datapacks require selecting a world in that profile; worlds found in the standard `.minecraft/saves` directory are copied into each profile the first time it launches. Modpack imports support vanilla and Fabric only; Forge and NeoForge packs are rejected rather than partially installed.
 
 ---
 
@@ -134,6 +174,7 @@ RevoMC stores launcher data in `~/.revomc/` and shares game files with the stand
 
 - **Microsoft login is supported** — switch to "Microsoft" mode in the launcher header and sign in with your Microsoft account to play on online-mode servers. Your session persists between launches via refresh tokens.
 - **Offline mode still works** — if you don't have a Microsoft account or prefer LAN/offline play, use "Offline" mode with any username.
+- **Skins and capes** — selecting local skins or capes for offline accounts is not supported. Offline accounts are not Microsoft-authenticated, and their appearance may not be available on online-mode servers.
 - **Dedicated GPU (dGPU) mode** — enabled by default on systems with hybrid graphics. On Windows, it sets a registry key (`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`) to tell Windows to run the Java runtime on your high-performance GPU. On Linux, it uses the `DRI_PRIME=1` environment variable.
 - **Safe Auto-Updates** — RevoMC checks GitHub for launcher updates and safely installs them by downloading to a temporary directory and running a smoke-test on the new binary. If the new binary is missing libraries or corrupt, the update automatically aborts without breaking your currently installed version.
 - Mod downloads use the [Modrinth](https://modrinth.com) API. Occasionally their servers may drop a connection mid-download — if this happens just hit **Install / Update** again to retry.

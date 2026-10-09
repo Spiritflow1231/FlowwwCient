@@ -1,5 +1,5 @@
 
-name: Build FlowwwClient
+name: Build FlowwwClient for Windows
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-windows:
@@ -26,22 +26,63 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
+        working-directory: RevoMC/RevoMC-main
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
-      - name: Build launcher
+      - name: Run syntax checks
+        working-directory: RevoMC/RevoMC-main
         run: |
-          python -m PyInstaller revomc.spec --clean --distpath builds/
+          python -m compileall -q main.py core ui tests
+
+      - name: Run tests
+        working-directory: RevoMC/RevoMC-main
+        run: python -m unittest discover -s tests -v
+
+      - name: Build release executable
+        working-directory: RevoMC/RevoMC-main
+        run: |
+          python -m PyInstaller revomc.spec --clean --noconfirm --distpath dist/release --workpath build/pyinstaller-release
+
+      - name: Smoke test release executable
+        working-directory: RevoMC/RevoMC-main
+        shell: pwsh
+        run: |
+          & .\dist\release\FlowwwClient.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build debug executable
+        working-directory: RevoMC/RevoMC-main
+        env:
+          FLOWWWCLIENT_DEBUG: "1"
+        run: |
+          python -m PyInstaller revomc.spec --clean --noconfirm --distpath dist/debug --workpath build/pyinstaller-debug
+
+      - name: Upload Windows release executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowwwClient-Windows
+          path: RevoMC/RevoMC-main/dist/release/FlowwwClient.exe
+          if-no-files-found: error
+
+      - name: Upload Windows debug executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowwwClient-Windows-Debug
+          path: RevoMC/RevoMC-main/dist/debug/FlowwwClient-debug.exe
+          if-no-files-found: error
+
+      - name: Create draft GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: RevoMC/RevoMC-main/dist/release/FlowwwClient.exe
 
       - name: Show build files
         shell: pwsh
         run: |
-          Get-ChildItem builds -Recurse
-
-      - name: Upload Windows build
-        uses: actions/upload-artifact@v4
-        with:
-          name: FlowwwClient-Windows
-          path: builds/
-          if-no-files-found: error
+          Get-ChildItem RevoMC/RevoMC-main/dist -Recurse

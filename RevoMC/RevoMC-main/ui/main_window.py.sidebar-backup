@@ -2,27 +2,18 @@
 ui/main_window.py  –  CustomTkinter UI for FlowwwClient
 All program logic is identical to the original PyQt6 version.
 """
-import json
-import urllib.parse
-import urllib.request
-import webbrowser
+
 import os
 import platform
 import ctypes
-import shutil
 import struct
 import subprocess
 import threading
-import tempfile
-import time
-import uuid
-from pathlib import Path
 import customtkinter as ctk
-from tkinter import TclError, messagebox
+from tkinter import messagebox
 
 import core.config as config
 import core.auth as auth
-import core.modrinth as modrinth
 from ui.theme import get_theme
 from core.installer import (
     fetch_release_versions,
@@ -104,920 +95,6 @@ def _section_label(master, text: str) -> ctk.CTkLabel:
     )
 
 
-class ProfileEditorWindow(ctk.CTkToplevel):
-    """Profile-specific content manager for FlowwwClient."""
-
-    CATEGORIES = [
-        ("Mods", "mods"),
-        ("Resource Packs", "resourcepacks"),
-        ("Modpacks", "modpacks"),
-        ("Datapacks", "datapacks"),
-        ("Shader Packs", "shaderpacks"),
-    ]
-
-    def __init__(self, parent, profile):
-        super().__init__(parent)
-
-        self.parent = parent
-        self.profile = profile
-        self.theme = parent.theme
-        self.category = "mods"
-        self.tab = "Installed"
-        self._working = False
-        self._cancel_event = None
-        self._request_serial = 0
-
-        self.title(f"Edit Profile — {profile.get('name', 'Profile')}")
-        self.geometry("1000x650")
-        self.minsize(800, 520)
-        self.configure(fg_color=self.theme["BG_PRIMARY"])
-        self.transient(parent)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        self._build_ui()
-
-    def _build_ui(self):
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=22, pady=(18, 12))
-
-        ctk.CTkLabel(
-            header,
-            text=self.profile.get("name", "Profile"),
-            text_color=self.theme["TEXT_FG"],
-            font=ctk.CTkFont(size=23, weight="bold"),
-        ).pack(side="left")
-
-        ctk.CTkLabel(
-            header,
-            text=f"Minecraft {self.profile.get('mc_version', '?')}  ·  "
-                 f"{self.profile.get('type', 'vanilla').title()}",
-            text_color=self.theme["TEXT_MUTED"],
-            font=ctk.CTkFont(size=12),
-        ).pack(side="right")
-
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=22, pady=(0, 18))
-        body.grid_columnconfigure(1, weight=1)
-        body.grid_rowconfigure(0, weight=1)
-
-        # Left category sidebar
-        sidebar = ctk.CTkFrame(
-            body,
-            width=185,
-            fg_color=self.theme["BG_SECONDARY"],
-            corner_radius=12,
-            border_width=1,
-            border_color=self.theme["BORDER_COL"],
-        )
-        sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        sidebar.grid_propagate(False)
-
-        ctk.CTkLabel(
-            sidebar,
-            text="PROFILE CONTENTS",
-            text_color=self.theme["TEXT_MUTED"],
-            font=ctk.CTkFont(size=10, weight="bold"),
-        ).pack(anchor="w", padx=14, pady=(18, 12))
-
-        self.category_buttons = {}
-
-        for label, key in self.CATEGORIES:
-            button = ctk.CTkButton(
-                sidebar,
-                text=label,
-                anchor="w",
-                height=38,
-                corner_radius=8,
-                fg_color=self.theme["ACCENT"] if key == self.category else "transparent",
-                text_color=self.theme["BG_PRIMARY"] if key == self.category else self.theme["TEXT_FG"],
-                hover_color=self.theme["ACCENT_DARK"],
-                command=lambda k=key: self._select_category(k),
-            )
-            button.pack(fill="x", padx=9, pady=3)
-            self.category_buttons[key] = button
-
-        # Right content panel
-        self.content = ctk.CTkFrame(
-            body,
-            fg_color=self.theme["BG_SECONDARY"],
-            corner_radius=12,
-            border_width=1,
-            border_color=self.theme["BORDER_COL"],
-        )
-        self.content.grid(row=0, column=1, sticky="nsew")
-        self.content.grid_columnconfigure(0, weight=1)
-        self.content.grid_rowconfigure(4, weight=1)
-
-        self.heading = ctk.CTkLabel(
-            self.content,
-            text="Mods",
-            text_color=self.theme["TEXT_FG"],
-            font=ctk.CTkFont(size=20, weight="bold"),
-        )
-        self.heading.grid(row=0, column=0, sticky="w", padx=18, pady=(18, 12))
-
-        search_row = ctk.CTkFrame(self.content, fg_color="transparent")
-        search_row.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 10))
-        search_row.grid_columnconfigure(0, weight=1)
-        self.search = ctk.CTkEntry(
-            search_row,
-            placeholder_text="Search Modrinth projects...",
-            height=38,
-            border_color=self.theme["BORDER_COL"],
-            fg_color=self.theme["BG_PRIMARY"],
-        )
-        self.search.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.search.bind("<Return>", lambda _event: self._on_search())
-        self.search_button = ctk.CTkButton(
-            search_row,
-            text="Search",
-            width=82,
-            height=38,
-            fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
-            hover_color=self.theme["ACCENT_DARK"],
-            command=self._on_search,
-        )
-        self.search_button.grid(row=0, column=1)
-
-        self.world_frame = ctk.CTkFrame(self.content, fg_color="transparent")
-        self.world_frame.grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 10))
-        ctk.CTkLabel(
-            self.world_frame,
-            text="Datapack target world",
-            text_color=self.theme["TEXT_MUTED"],
-        ).pack(side="left", padx=(0, 10))
-        self.world_var = ctk.StringVar(value="")
-        self.world_menu = ctk.CTkOptionMenu(
-            self.world_frame,
-            variable=self.world_var,
-            values=["No worlds found"],
-            fg_color=self.theme["BG_PRIMARY"],
-            button_color=self.theme["ACCENT"],
-            button_hover_color=self.theme["ACCENT_DARK"],
-            text_color=self.theme["TEXT_FG"],
-            command=lambda _value: self._refresh_content(),
-        )
-        self.world_menu.pack(side="left", fill="x", expand=True)
-        self.world_frame.grid_remove()
-
-        tabs = ctk.CTkFrame(self.content, fg_color="transparent")
-        tabs.grid(row=3, column=0, sticky="w", padx=18, pady=(0, 10))
-
-        self.installed_btn = ctk.CTkButton(
-            tabs,
-            text="Installed",
-            width=100,
-            fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
-            command=lambda: self._select_tab("Installed"),
-        )
-        self.installed_btn.pack(side="left", padx=(0, 8))
-
-        self.browse_btn = ctk.CTkButton(
-            tabs,
-            text="Browse",
-            width=100,
-            fg_color="transparent",
-            border_width=1,
-            border_color=self.theme["BORDER_COL"],
-            text_color=self.theme["TEXT_FG"],
-            command=lambda: self._select_tab("Browse"),
-        )
-        self.browse_btn.pack(side="left")
-
-        self.results = ctk.CTkScrollableFrame(
-            self.content,
-            fg_color=self.theme["BG_PRIMARY"],
-            corner_radius=10,
-        )
-        self.results.grid(
-            row=4, column=0, sticky="nsew", padx=18, pady=(0, 8)
-        )
-        footer = ctk.CTkFrame(self.content, fg_color="transparent")
-        footer.grid(row=5, column=0, sticky="ew", padx=18, pady=(0, 14))
-        footer.grid_columnconfigure(0, weight=1)
-        self.status = ctk.CTkLabel(
-            footer,
-            text="",
-            text_color=self.theme["TEXT_MUTED"],
-            anchor="w",
-            justify="left",
-            wraplength=600,
-        )
-        self.status.grid(row=0, column=0, sticky="ew")
-        self.cancel_btn = ctk.CTkButton(
-            footer,
-            text="Cancel download",
-            width=112,
-            state="disabled",
-            fg_color="transparent",
-            border_width=1,
-            border_color=self.theme["BORDER_COL"],
-            text_color=self.theme["TEXT_FG"],
-            command=self._cancel_install,
-        )
-        self.cancel_btn.grid(row=0, column=1, padx=(8, 0))
-
-        self._refresh_content()
-
-    def _select_category(self, category):
-        self.category = category
-
-        for key, button in self.category_buttons.items():
-            active = key == category
-            button.configure(
-                fg_color=self.theme["ACCENT"] if active else "transparent",
-                text_color=self.theme["BG_PRIMARY"] if active else self.theme["TEXT_FG"],
-            )
-
-        self._refresh_content()
-
-    def _select_tab(self, tab):
-        self.tab = tab
-
-        self.installed_btn.configure(
-            fg_color=self.theme["ACCENT"] if tab == "Installed" else "transparent",
-            text_color=self.theme["BG_PRIMARY"] if tab == "Installed" else self.theme["TEXT_FG"],
-        )
-        self.browse_btn.configure(
-            fg_color=self.theme["ACCENT"] if tab == "Browse" else "transparent",
-            text_color=self.theme["BG_PRIMARY"] if tab == "Browse" else self.theme["TEXT_FG"],
-        )
-
-        self._refresh_content()
-
-    def _on_search(self):
-        self.tab = "Browse"
-        self.installed_btn.configure(
-            fg_color="transparent",
-            text_color=self.theme["TEXT_FG"],
-        )
-        self.browse_btn.configure(
-            fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
-        )
-        self._search_projects()
-
-    def _refresh_content(self):
-        self._request_serial += 1
-        labels = dict(self.CATEGORIES)
-        self.heading.configure(text=labels[self.category])
-        if self.category == "datapacks":
-            self.world_frame.grid()
-            self._refresh_worlds()
-        else:
-            self.world_frame.grid_remove()
-        self._clear_results()
-        if self.tab == "Installed":
-            self._show_installed()
-        elif self.category == "datapacks" and not self.world_var.get():
-            self._show_state(
-                "No worlds found in this profile. Launch it once to copy existing "
-                ".minecraft worlds, or create a world, then reopen the editor."
-            )
-        else:
-            self._search_projects()
-
-    def _clear_results(self):
-        for widget in self.results.winfo_children():
-            widget.destroy()
-
-    def _show_state(self, text: str):
-        ctk.CTkLabel(
-            self.results,
-            text=text,
-            text_color=self.theme["TEXT_MUTED"],
-            font=ctk.CTkFont(size=13),
-            wraplength=650,
-            justify="left",
-        ).pack(anchor="w", padx=14, pady=16)
-
-    def _instance_dir(self) -> Path:
-        return modrinth.profile_instance_dir(self.profile)
-
-    def _refresh_worlds(self):
-        saves = self._instance_dir() / "saves"
-        worlds = []
-        if (
-            saves.is_dir()
-            and saves.resolve().is_relative_to(self._instance_dir().resolve())
-        ):
-            for path in saves.iterdir():
-                if path.is_dir() and path.resolve().is_relative_to(saves.resolve()):
-                    worlds.append(path.name)
-        current = self.world_var.get()
-        self.world_menu.configure(values=worlds or ["No worlds found"])
-        if current not in worlds:
-            self.world_var.set(worlds[0] if worlds else "")
-
-    def _category_directory(self) -> Path:
-        instance = self._instance_dir()
-        if self.category == "datapacks":
-            world = self.world_var.get()
-            if not world:
-                raise RuntimeError("Select a world that already exists in this profile.")
-            world_path = Path(world)
-            if world_path.name != world or world in (".", "..") or "/" in world or "\\" in world:
-                raise ValueError("Invalid world name.")
-            return instance / "saves" / world / "datapacks"
-        return instance / self.category
-
-    def _is_shader_supported(self) -> bool:
-        instance = self._instance_dir()
-        mods_dir = instance / "mods"
-        if not mods_dir.is_dir() or not mods_dir.resolve().is_relative_to(instance.resolve()):
-            return False
-        return any(
-            path.is_file()
-            and path.name.lower().startswith(("iris", "optifine"))
-            for path in mods_dir.glob("*.jar")
-        )
-
-    def _show_installed(self):
-        if self.category == "modpacks":
-            query = self.search.get().strip().casefold()
-            profiles = [
-                profile for profile in self.parent.cfg.get("profiles", [])
-                if isinstance(profile, dict)
-                and isinstance(profile.get("source_modpack"), dict)
-                and profile["source_modpack"].get("project_id")
-                and (
-                    not query
-                    or query in str(profile.get("name", "")).casefold()
-                    or query in str(profile["source_modpack"].get("title", "")).casefold()
-                )
-            ]
-            if not profiles:
-                self._show_state("No Modrinth modpacks have been imported yet.")
-                return
-            for profile in profiles:
-                self._render_modpack_profile(profile)
-            return
-
-        if self.category == "datapacks" and not self.world_var.get():
-            self._show_state("Select a world with an existing datapacks folder to view its packs.")
-            return
-
-        installed_content = self.profile.get("installed_content", {})
-        raw_records = installed_content.get(self.category, []) if isinstance(installed_content, dict) else []
-        records = [record for record in raw_records if isinstance(record, dict)]
-        if self.category == "datapacks":
-            records = [
-                record for record in records
-                if not record.get("world") or record.get("world") == self.world_var.get()
-            ]
-        query = self.search.get().strip().casefold()
-        known = {record.get("filename") for record in records}
-        try:
-            files = modrinth.list_installed_files(
-                self.profile,
-                self.category,
-                self.world_var.get() if self.category == "datapacks" else None,
-            )
-        except (OSError, ValueError) as exc:
-            self._show_state(f"Could not read installed content: {exc}")
-            return
-
-        found = False
-        for record in records:
-            filename = record.get("filename")
-            if not isinstance(filename, str) or Path(filename).name != filename:
-                continue
-            if query and query not in filename.casefold() and query not in str(record.get("title", "")).casefold():
-                continue
-            target = self._category_directory() / filename
-            disabled_target = target.with_name(target.name + ".disabled")
-            if not target.is_file() and not disabled_target.is_file():
-                continue
-            self._render_installed_record(record, target, disabled_target)
-            found = True
-        for path in files:
-            if path.name not in known and (not query or query in path.name.casefold()):
-                self._render_installed_file(path)
-                found = True
-        if not found:
-            self._show_state("Nothing is installed in this category for this profile yet.")
-
-    def _card(self, title: str, description: str = ""):
-        card = ctk.CTkFrame(
-            self.results,
-            fg_color=self.theme["BG_SECONDARY"],
-            corner_radius=10,
-            border_width=1,
-            border_color=self.theme["BORDER_COL"],
-        )
-        card.pack(fill="x", padx=7, pady=5)
-        card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            card,
-            text=title,
-            text_color=self.theme["TEXT_FG"],
-            font=ctk.CTkFont(size=14, weight="bold"),
-            anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=13, pady=(10, 2))
-        if description:
-            ctk.CTkLabel(
-                card,
-                text=description,
-                text_color=self.theme["TEXT_MUTED"],
-                font=ctk.CTkFont(size=11),
-                anchor="w",
-                justify="left",
-                wraplength=640,
-            ).grid(row=1, column=0, sticky="ew", padx=13, pady=(0, 10))
-        return card
-
-    def _render_installed_file(self, path: Path):
-        card = self._card(path.name)
-        button = ctk.CTkButton(
-            card,
-            text="Remove",
-            width=76,
-            fg_color="transparent",
-            border_width=1,
-            border_color=self.theme["RED"],
-            text_color=self.theme["RED"],
-            hover_color=self.theme["BG_PRIMARY"],
-            command=lambda p=path: self._remove_file(p),
-        )
-        button.grid(row=0, column=1, rowspan=2, padx=12, pady=10)
-
-    def _render_installed_record(self, record: dict, path: Path, disabled_path: Path):
-        filename = record.get("filename", path.name)
-        title = record.get("title") or filename
-        details = f"{record.get('version', 'Installed')}  ·  {filename}"
-        card = self._card(title, details)
-        column = 1
-        if self.category == "mods":
-            enabled = path.is_file()
-            toggle = ctk.CTkButton(
-                card,
-                text="Enabled" if enabled else "Disabled",
-                width=82,
-                fg_color=self.theme["ACCENT"] if enabled else "transparent",
-                border_width=0 if enabled else 1,
-                border_color=self.theme["BORDER_COL"],
-                text_color=self.theme["BG_PRIMARY"] if enabled else self.theme["TEXT_FG"],
-                hover_color=self.theme["ACCENT_DARK"],
-                command=lambda r=record: self._toggle_mod(r),
-            )
-            toggle.grid(row=0, column=column, rowspan=2, padx=(0, 8), pady=10)
-            column += 1
-        ctk.CTkButton(
-            card,
-            text="Remove",
-            width=76,
-            fg_color="transparent",
-            border_width=1,
-            border_color=self.theme["RED"],
-            text_color=self.theme["RED"],
-            hover_color=self.theme["BG_PRIMARY"],
-            command=lambda p=path, d=disabled_path: self._remove_file(p, d),
-        ).grid(row=0, column=column, rowspan=2, padx=(0, 12), pady=10)
-
-    def _render_modpack_profile(self, profile: dict):
-        source = profile.get("source_modpack", {})
-        query = self.search.get().strip().casefold()
-        if query and query not in str(profile.get("name", "")).casefold() and query not in str(source.get("title", "")).casefold():
-            return
-        card = self._card(
-            profile.get("name", "Imported Modpack"),
-            f"Minecraft {profile.get('mc_version', '?')} · "
-            f"{profile.get('type', 'vanilla').title()} · Isolated profile",
-        )
-        ctk.CTkButton(
-            card,
-            text="Select profile",
-            width=104,
-            fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
-            hover_color=self.theme["ACCENT_DARK"],
-            command=lambda p=profile: self._select_imported_profile(p),
-        ).grid(row=0, column=1, rowspan=2, padx=(0, 8), pady=10)
-        ctk.CTkButton(
-            card,
-            text="Remove",
-            width=76,
-            fg_color="transparent",
-            border_width=1,
-            border_color=self.theme["RED"],
-            text_color=self.theme["RED"],
-            hover_color=self.theme["BG_PRIMARY"],
-            command=lambda p=profile: self._remove_modpack_profile(p),
-        ).grid(row=0, column=2, rowspan=2, padx=(0, 12), pady=10)
-
-    def _render_project(self, project: dict):
-        title = project.get("title") or project.get("slug") or "Untitled project"
-        description = project.get("description") or "No description provided."
-        author = project.get("author") or "Unknown author"
-        details = f"by {author}  ·  Supports MC {self.profile.get('mc_version', '?')}"
-        if project.get("downloads") is not None:
-            details += f"  ·  {project['downloads']:,} downloads"
-        card = self._card(title, f"{details}\n{description}")
-        project_id = project.get("project_id")
-        installed = self._project_installed(project_id)
-        can_install = self._can_install_category()
-        if installed:
-            label, state = "Installed", "disabled"
-        elif not can_install:
-            label, state = "Unavailable", "disabled"
-        else:
-            label, state = "Install", "normal"
-        button = ctk.CTkButton(
-            card,
-            text=label,
-            width=88,
-            state=state,
-            fg_color=self.theme["ACCENT"] if state == "normal" else "transparent",
-            border_width=0 if state == "normal" else 1,
-            border_color=self.theme["BORDER_COL"],
-            text_color=self.theme["BG_PRIMARY"] if state == "normal" else self.theme["TEXT_MUTED"],
-            hover_color=self.theme["ACCENT_DARK"],
-            command=lambda p=project: self._install_project(p),
-        )
-        button.grid(row=0, column=1, rowspan=2, padx=12, pady=10)
-
-    def _can_install_category(self) -> bool:
-        if self.category == "mods" and self.profile.get("type") != "fabric":
-            return False
-        if self.category == "datapacks" and not self.world_var.get():
-            return False
-        if self.category == "shaderpacks" and not self._is_shader_supported():
-            return False
-        return True
-
-    def _project_installed(self, project_id) -> bool:
-        if not project_id:
-            return False
-        if self.category == "modpacks":
-            return any(
-                isinstance(p, dict)
-                and isinstance(p.get("source_modpack"), dict)
-                and p["source_modpack"].get("project_id") == project_id
-                for p in self.parent.cfg.get("profiles", [])
-            )
-        installed_content = self.profile.get("installed_content", {})
-        records = installed_content.get(self.category, []) if isinstance(installed_content, dict) else []
-        return any(
-            isinstance(record, dict) and record.get("project_id") == project_id
-            for record in records
-        )
-
-    def _search_projects(self):
-        if self.category == "mods" and self.profile.get("type") != "fabric":
-            self._show_state("Mods require Fabric in this launcher. Create or select a Fabric profile first.")
-            return
-        query = self.search.get().strip()
-        self._request_serial += 1
-        serial = self._request_serial
-        category = self.category
-        self._show_state("Searching Modrinth…")
-
-        def worker():
-            try:
-                projects = modrinth.search_projects(
-                    category,
-                    query,
-                    self.profile.get("mc_version", ""),
-                    self.profile.get("type", "vanilla"),
-                )
-                result = (projects, None)
-            except Exception as exc:
-                result = (None, str(exc))
-
-            def update():
-                if not self.winfo_exists() or serial != self._request_serial:
-                    return
-                self._clear_results()
-                projects, error = result
-                if error:
-                    self._show_state(f"Could not search Modrinth: {error}")
-                elif not projects:
-                    self._show_state("No compatible projects were found. Try another search.")
-                else:
-                    for project in projects:
-                        self._render_project(project)
-
-            self._post(update)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _install_project(self, project: dict):
-        if self._working:
-            return
-        if self.category == "shaderpacks" and not self._is_shader_supported():
-            messagebox.showinfo(
-                "Shader support required",
-                "Install Iris or OptiFine in this profile before adding shader packs.",
-                parent=self,
-            )
-            return
-        if self.category == "datapacks" and not self.world_var.get():
-            messagebox.showinfo("Choose a world", "Select an existing world first.", parent=self)
-            return
-
-        project_id = project.get("project_id")
-        if not isinstance(project_id, str):
-            self._show_state("Modrinth returned a project without a valid ID.")
-            return
-        self._working = True
-        self._cancel_event = threading.Event()
-        self._clear_results()
-        self._show_state("Finding a compatible release…")
-        self._set_manager_busy(True)
-        self.cancel_btn.configure(state="normal")
-        category = self.category
-        world = self.world_var.get() if category == "datapacks" else None
-        try:
-            destination = (
-                self._instance_dir()
-                if self.category == "modpacks"
-                else self._category_directory()
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            self._working = False
-            self._show_state(str(exc))
-            return
-        if not destination.resolve().is_relative_to(self._instance_dir().resolve()):
-            self._working = False
-            self._set_manager_busy(False)
-            self._show_state("The selected installation directory is outside this profile.")
-            return
-        if self.category != "modpacks":
-            try:
-                destination.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                self._working = False
-                self._set_manager_busy(False)
-                self._show_state(f"Could not prepare the install directory: {exc}")
-                return
-        title = project.get("title") or project.get("slug") or "Modrinth project"
-        cancel_event = self._cancel_event
-        last_progress_update = [0.0]
-
-        def progress(done, total):
-            now = time.monotonic()
-            if total and done < total and now - last_progress_update[0] < 0.2:
-                return
-            last_progress_update[0] = now
-            total_text = f" / {total:,}" if total else ""
-            text = f"Downloading {title}: {done:,}{total_text}"
-            self._post(lambda: self._set_status(text))
-
-        def worker():
-            try:
-                versions = modrinth.compatible_versions(
-                    project_id,
-                    category,
-                    self.profile.get("mc_version", ""),
-                    self.profile.get("type", "vanilla"),
-                )
-                if not versions:
-                    raise RuntimeError("No compatible release exists for this profile.")
-                if category == "modpacks":
-                    profile = self._import_modpack(project, versions[0], cancel_event, progress)
-                    self._post(lambda p=profile: self._finish_modpack_install(p))
-                else:
-                    installed = modrinth.download_project_file(
-                        versions[0], category, destination,
-                        cancel_event=cancel_event,
-                        progress=progress,
-                    )
-                    record = {
-                        "project_id": project_id,
-                        "title": title,
-                        "filename": installed.name,
-                        "version": versions[0].get("version_number", "latest"),
-                        "enabled": True,
-                    }
-                    self._post(lambda r=record, w=world: self._finish_file_install(r, w))
-            except Exception as exc:
-                self._post(lambda message=str(exc): self._finish_install_error(message))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _import_modpack(self, project, version, cancel_event, progress):
-        instance_id = uuid.uuid4().hex
-        imported_profile = {
-            "instance_id": instance_id,
-            "name": project.get("title") or project.get("slug") or "Imported Modpack",
-            "mc_version": self.profile.get("mc_version", ""),
-            "type": self.profile.get("type", "vanilla"),
-            "mods": [],
-        }
-        instance = modrinth.profile_instance_dir(imported_profile)
-        downloads_dir = Path.home() / ".revomc" / "downloads"
-        downloads_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="modrinth-pack-", dir=downloads_dir) as temp_dir:
-            archive = modrinth.download_project_file(
-                version,
-                "modpacks",
-                Path(temp_dir),
-                cancel_event=cancel_event,
-                progress=progress,
-            )
-            manifest = modrinth.install_modpack(archive, instance, cancel_event, progress)
-        if manifest["mc_version"] != imported_profile["mc_version"]:
-            shutil.rmtree(instance)
-            raise RuntimeError("The modpack manifest version does not match the selected profile version.")
-        if manifest["type"] != imported_profile["type"]:
-            shutil.rmtree(instance)
-            raise RuntimeError("The modpack requires a different loader than the selected profile.")
-        imported_profile.update({
-            "name": manifest["name"],
-            "source_modpack": {
-                "project_id": project["project_id"],
-                "title": project.get("title", manifest["name"]),
-                "version": version.get("version_number", ""),
-            },
-        })
-        if manifest.get("fabric_loader_version"):
-            imported_profile["fabric_loader_version"] = manifest["fabric_loader_version"]
-        return imported_profile
-
-    def _finish_file_install(self, record: dict, world: str | None):
-        if world:
-            record["world"] = world
-        records = self.profile.setdefault("installed_content", {}).setdefault(self.category, [])
-        records.append(record)
-        try:
-            config.save(self.parent.cfg)
-        except OSError as exc:
-            records.remove(record)
-            self._finish_install_error(f"Downloaded, but could not save profile settings: {exc}")
-            return
-        self._finish_install(f"Installed {record['title']} ({record['filename']}).")
-
-    def _finish_modpack_install(self, profile: dict):
-        try:
-            existing = {p.get("name") for p in self.parent.cfg.get("profiles", [])}
-            base_name = profile["name"]
-            name = base_name
-            suffix = 2
-            while name in existing:
-                name = f"{base_name} ({suffix})"
-                suffix += 1
-            profile["name"] = name
-            self.parent.cfg.setdefault("profiles", []).append(profile)
-            config.save(self.parent.cfg)
-        except OSError as exc:
-            self.parent.cfg["profiles"].remove(profile)
-            try:
-                shutil.rmtree(modrinth.profile_instance_dir(profile))
-            except OSError:
-                pass
-            self._finish_install_error(f"Imported the pack, but could not save its profile: {exc}")
-            return
-        self.parent._refresh_profile_list()
-        self._finish_install(f"Imported '{profile['name']}' as an isolated profile.")
-
-    def _finish_install(self, message: str):
-        self._working = False
-        self._cancel_event = None
-        self.cancel_btn.configure(state="disabled")
-        self._set_manager_busy(False)
-        self.status.configure(text=message)
-        self._refresh_content()
-
-    def _finish_install_error(self, message: str):
-        self._working = False
-        self._cancel_event = None
-        self.cancel_btn.configure(state="disabled")
-        self._set_manager_busy(False)
-        self.status.configure(text=message)
-        self._refresh_content()
-
-    def _set_manager_busy(self, busy: bool):
-        state = "disabled" if busy else "normal"
-        self.search.configure(state=state)
-        self.search_button.configure(state=state)
-        self.installed_btn.configure(state=state)
-        self.browse_btn.configure(state=state)
-        self.world_menu.configure(state=state)
-        for button in self.category_buttons.values():
-            button.configure(state=state)
-
-    def _set_status(self, message: str):
-        if self.winfo_exists():
-            self.status.configure(text=message)
-
-    def _post(self, callback):
-        try:
-            if self.winfo_exists():
-                self.after(0, callback)
-        except TclError:
-            pass
-
-    def _cancel_install(self):
-        if self._cancel_event:
-            self._cancel_event.set()
-            self.status.configure(text="Cancelling download…")
-            self.cancel_btn.configure(state="disabled")
-
-    def _remove_file(self, path: Path, disabled_path: Path | None = None):
-        if not messagebox.askyesno(
-            "Remove installed content",
-            f"Remove {path.name} from this profile?",
-            parent=self,
-        ):
-            return
-        try:
-            if disabled_path and disabled_path.is_file():
-                disabled_path.unlink()
-            if path.is_file():
-                modrinth.remove_installed_file(
-                    self.profile,
-                    self.category,
-                    path,
-                    self.world_var.get() if self.category == "datapacks" else None,
-                )
-            installed_content = self.profile.get("installed_content", {})
-            records = installed_content.get(self.category, []) if isinstance(installed_content, dict) else []
-            self.profile.setdefault("installed_content", {})[self.category] = [
-                record for record in records
-                if (
-                    not isinstance(record, dict)
-                    or record.get("filename") not in {
-                        path.name,
-                        disabled_path.name if disabled_path else "",
-                    }
-                    or (
-                        self.category == "datapacks"
-                        and record.get("world")
-                        and record.get("world") != self.world_var.get()
-                    )
-                )
-            ]
-            config.save(self.parent.cfg)
-            self._refresh_content()
-        except (OSError, ValueError, RuntimeError) as exc:
-            messagebox.showerror("Could not remove content", str(exc), parent=self)
-
-    def _toggle_mod(self, record: dict):
-        filename = record.get("filename", "")
-        if Path(filename).name != filename or not filename.endswith(".jar"):
-            messagebox.showerror("Invalid mod file", "The installed mod has an invalid filename.", parent=self)
-            return
-        mods_dir = self._instance_dir() / "mods"
-        original = mods_dir / filename
-        disabled = mods_dir / f"{filename}.disabled"
-        try:
-            if original.is_file():
-                if disabled.exists():
-                    raise FileExistsError(f"{disabled.name} already exists.")
-                original.rename(disabled)
-                record["enabled"] = False
-            elif disabled.is_file():
-                if original.exists():
-                    raise FileExistsError(f"{original.name} already exists.")
-                disabled.rename(original)
-                record["enabled"] = True
-            else:
-                raise FileNotFoundError("The installed mod file is missing.")
-            config.save(self.parent.cfg)
-            self._refresh_content()
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Could not change mod state", str(exc), parent=self)
-
-    def _select_imported_profile(self, profile: dict):
-        profiles = self.parent.cfg.get("profiles", [])
-        try:
-            index = profiles.index(profile)
-        except ValueError:
-            return
-        self.parent._on_profile_selected(index)
-
-    def _remove_modpack_profile(self, profile: dict):
-        if not messagebox.askyesno(
-            "Remove imported modpack",
-            f"Remove '{profile.get('name')}' and permanently delete its isolated instance, "
-            "including worlds and settings?",
-            parent=self,
-        ):
-            return
-        try:
-            instance = modrinth.profile_instance_dir(profile)
-            expected_root = (Path.home() / ".revomc" / "instances").resolve()
-            if not instance.resolve().is_relative_to(expected_root):
-                raise ValueError("Refusing to remove a profile outside the launcher instances folder.")
-            if instance.exists():
-                shutil.rmtree(instance)
-            self.parent.cfg["profiles"].remove(profile)
-            if self.parent.cfg.get("active_profile") == profile.get("name"):
-                self.parent.cfg["active_profile"] = None
-            config.save(self.parent.cfg)
-            self.parent._refresh_profile_list()
-            self._refresh_content()
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Could not remove modpack", str(exc), parent=self)
-
-    def _on_close(self):
-        if self._working:
-            self._cancel_install()
-            return
-        self._request_serial += 1
-        self.destroy()
 # ── New Profile Dialog ─────────────────────────────────────────────────────────
 
 class NewProfileDialog(ctk.CTkToplevel):
@@ -1263,21 +340,6 @@ class MainWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.cfg              = config.load()
-        instance_ids = set()
-        profiles_changed = False
-        for profile in self.cfg.get("profiles", []):
-            instance_id = profile.get("instance_id")
-            if (
-                not isinstance(instance_id, str)
-                or len(instance_id) != 32
-                or any(character not in "0123456789abcdef" for character in instance_id)
-                or instance_id in instance_ids
-            ):
-                profile["instance_id"] = uuid.uuid4().hex
-                profiles_changed = True
-            instance_ids.add(profile["instance_id"])
-        if profiles_changed:
-            config.save(self.cfg)
         self.theme            = get_theme(self.cfg.get("theme", "overworld"))
         self.all_versions: list[str]    = []
         self.fabric_versions: list[str] = []
@@ -1295,7 +357,7 @@ class MainWindow(ctk.CTk):
     def _check_java(self):
         from core.updater import CURRENT_VERSION
         self._log(f"🚀 FlowwwClient Launcher Version: {CURRENT_VERSION}")
-        self._log("☕ Java runtimes are downloaded on demand (Java 8 / 17 / 21 / 25).")
+        self._log("☕ Java runtimes are downloaded on demand (Java 8 / 21 / 25).")
 
     # ── UI Construction ───────────────────────────────────────────────────────
 
@@ -1341,32 +403,24 @@ class MainWindow(ctk.CTk):
         main_area.pack(
             side="left", fill="both", expand=True, padx=28, pady=24
         )
-        self.nav_buttons = {}
 
-        def nav_button(key, label, command):
-            btn = ctk.CTkButton(
+        def nav_button(label, command, active=False):
+            ctk.CTkButton(
                 sidebar,
                 text=label,
                 anchor="w",
-                height=44,
+                height=42,
                 corner_radius=10,
-                fg_color="transparent",
-                hover_color=BG_PRIMARY,
-                text_color=TEXT_FG,
-                font=ctk.CTkFont(size=13, weight="bold"),
+                fg_color=self.theme["ACCENT"] if active else "transparent",
+                hover_color=GREEN_DARK if active else BG_PRIMARY,
+                text_color=BG_PRIMARY if active else TEXT_FG,
                 command=command,
-            )
-            btn.pack(fill="x", padx=12, pady=4)
-            self.nav_buttons[key] = btn
+            ).pack(fill="x", padx=12, pady=3)
 
-        nav_button("dashboard", "▦   Dashboard",
-                   lambda: self._show_page("dashboard"))
-        nav_button("profiles", "▤   Profiles",
-                   lambda: self._show_page("profiles"))
-        nav_button("console", "⌘   Console",
-                   lambda: self._show_page("console"))
-        nav_button("settings", "⚙   Settings",
-                   self._on_open_settings)
+        nav_button("▦   Dashboard", lambda: self.play_btn.focus_set(), True)
+        nav_button("▤   Profiles", lambda: self.profile_list_frame.focus_set())
+        nav_button("⌘   Console", lambda: self.log_box.focus_set())
+        nav_button("⚙   Settings", self._on_open_settings)
 
 
         # ── Header ────────────────────────────────────────────────────────────
@@ -1459,51 +513,9 @@ class MainWindow(ctk.CTk):
 
         self._build_left(content)
         self._build_right(content)
-        self._show_page("dashboard")
-
-    def _show_page(self, page):
-        if not hasattr(self, "left_panel") or not hasattr(self, "right_panel"):
-            return
-
-        content = self.left_panel.master
-
-        self.left_panel.grid_forget()
-        self.right_panel.grid_forget()
-
-        content.columnconfigure(0, weight=1)
-        content.columnconfigure(1, weight=1)
-
-        if page == "dashboard":
-            self.left_panel.grid(
-                row=0, column=0, sticky="nsew", padx=(0, 8)
-            )
-            self.right_panel.grid(
-                row=0, column=1, sticky="nsew", padx=(8, 0)
-            )
-
-        elif page == "profiles":
-            content.columnconfigure(1, weight=0)
-            self.left_panel.grid(
-                row=0, column=0, columnspan=2, sticky="nsew"
-            )
-
-        elif page == "console":
-            content.columnconfigure(1, weight=0)
-            self.right_panel.grid(
-                row=0, column=0, columnspan=2, sticky="nsew"
-            )
-
-        for key, btn in self.nav_buttons.items():
-            active = key == page
-            btn.configure(
-                fg_color=self.theme["ACCENT"] if active else "transparent",
-                hover_color=GREEN_DARK if active else BG_PRIMARY,
-                text_color=BG_PRIMARY if active else TEXT_FG,
-            )
 
     def _build_left(self, parent):
         left = ctk.CTkFrame(parent, fg_color="transparent")
-        self.left_panel = left
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.rowconfigure(1, weight=1)
 
@@ -1518,19 +530,6 @@ class MainWindow(ctk.CTk):
             command=self._on_open_settings,
         )
         self.settings_btn.pack(side="right", padx=(6, 0))
-
-        self.edit_btn = ctk.CTkButton(
-            ph,
-            text="Edit",
-            width=58,
-            fg_color=BG_SECONDARY,
-            border_width=1,
-            border_color=BLUE,
-            text_color=BLUE,
-            hover_color=BG_PRIMARY,
-            command=self._on_edit_profile,
-        )
-        self.edit_btn.pack(side="right", padx=(6, 0))
         self.del_btn = ctk.CTkButton(
             ph, text="Delete", width=72,
             fg_color="transparent", border_width=1, border_color=RED,
@@ -1599,61 +598,32 @@ class MainWindow(ctk.CTk):
 
     def _build_right(self, parent):
         right = ctk.CTkFrame(parent, fg_color="transparent")
-        self.right_panel = right
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         right.rowconfigure(1, weight=1)
 
-        # Console header
-        header = ctk.CTkFrame(right, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 10))
+        _section_label(right, "Console").pack(anchor="w", pady=(0, 4))
 
-        _section_label(header, "Game Console").pack(side="left")
-
-        self.console_status = ctk.CTkLabel(
-            header,
-            text="● READY",
-            text_color=GREEN,
-            font=ctk.CTkFont(size=11, weight="bold"),
-        )
-        self.console_status.pack(side="right")
-
-        # Log output card
         self.log_box = ctk.CTkTextbox(
-            right,
-            state="disabled",
-            fg_color=BG_CONSOLE,
-            border_color=BORDER_COL,
-            border_width=1,
+            right, state="disabled",
+            fg_color=BG_CONSOLE, border_color=BORDER_COL, border_width=1,
             corner_radius=12,
             font=ctk.CTkFont(family="monospace", size=11),
             text_color="#a0aec0",
         )
-        self.log_box.pack(fill="both", expand=True, pady=(0, 12))
-
-        # Launch progress
-        progress_header = ctk.CTkFrame(right, fg_color="transparent")
-        progress_header.pack(fill="x", pady=(0, 6))
-
-        _section_label(progress_header, "LAUNCH PROGRESS").pack(side="left")
+        self.log_box.pack(fill="both", expand=True, pady=(0, 8))
 
         self.progress_bar = ctk.CTkProgressBar(
-            right,
-            progress_color=GREEN,
-            fg_color=BG_SECONDARY,
-            height=8,
-            corner_radius=6,
+            right, progress_color=GREEN, fg_color=BG_SECONDARY,
         )
         self.progress_bar.set(0)
-        self.progress_bar.pack(fill="x", pady=(0, 8))
+        self.progress_bar.pack(fill="x", pady=(0, 4))
 
         self.status_lbl = ctk.CTkLabel(
-            right,
-            text="Ready to launch Minecraft.",
-            text_color=TEXT_MUTED,
-            font=ctk.CTkFont(size=12),
-            anchor="w",
+            right, text="Ready.", text_color=TEXT_LABEL,
+            font=ctk.CTkFont(size=11), anchor="w",
         )
-        self.status_lbl.pack(anchor="w", pady=(0, 4))
+        self.status_lbl.pack(anchor="w")
+
     # ── Version loading ────────────────────────────────────────────────────────
 
     def _load_versions(self):
@@ -1698,7 +668,6 @@ class MainWindow(ctk.CTk):
                 "mc_version": self.all_versions[0],
                 "type": "vanilla",
                 "mods": [],
-                "instance_id": uuid.uuid4().hex,
             }
             profiles_created.append(vanilla_profile)
 
@@ -1709,7 +678,6 @@ class MainWindow(ctk.CTk):
                 "mc_version": self.fabric_versions[0],
                 "type": "fabric",
                 "mods": list(AVAILABLE_MODS.keys()),
-                "instance_id": uuid.uuid4().hex,
             }
             profiles_created.append(fabric_profile)
 
@@ -1758,7 +726,6 @@ class MainWindow(ctk.CTk):
                     "mc_version": latest_vanilla,
                     "type": "vanilla",
                     "mods": [],
-                    "instance_id": uuid.uuid4().hex,
                 })
                 changed = True
 
@@ -1780,7 +747,6 @@ class MainWindow(ctk.CTk):
                         "mc_version": latest_fabric,
                         "type": "fabric",
                         "mods": list(AVAILABLE_MODS.keys()),
-                        "instance_id": uuid.uuid4().hex,
                     })
                     changed = True
 
@@ -1860,14 +826,6 @@ class MainWindow(ctk.CTk):
         else:
             self.info_mods_lbl.configure(text="No mods installed")
 
-    def _on_edit_profile(self):
-        profile = self._current_profile()
-        if not profile:
-            self._log("Select a profile before editing.")
-            return
-
-        ProfileEditorWindow(self, profile)
-
     def _on_new_profile(self):
         if not self.all_versions:
             self._log("⚠  Still loading versions, try again in a moment.")
@@ -1885,7 +843,6 @@ class MainWindow(ctk.CTk):
             self._log(f"⚠  A profile named '{profile['name']}' already exists.")
             return
         self.cfg.setdefault("profiles", []).append(profile)
-        profile.setdefault("instance_id", uuid.uuid4().hex)
         self.cfg["active_profile"] = profile["name"]
         config.save(self.cfg)
         self._refresh_profile_list()
@@ -1914,46 +871,7 @@ class MainWindow(ctk.CTk):
         entry = self.cfg.get("installed_versions", {}).get(profile["mc_version"])
         if not entry:
             return False
-        if entry.get("type") != profile["type"]:
-            return False
-        pinned_loader = profile.get("fabric_loader_version")
-        if pinned_loader:
-            expected_id = f"fabric-loader-{pinned_loader}-{profile['mc_version']}"
-            return entry.get("fabric_profile_id") == expected_id
-        return True
-
-    def _migrate_shared_worlds(self, profile: dict) -> None:
-        instance = modrinth.profile_instance_dir(profile)
-        profile_saves = instance / "saves"
-        if profile_saves.is_symlink() or not profile_saves.resolve().is_relative_to(instance.resolve()):
-            raise OSError("The profile saves directory points outside the profile instance.")
-        shared_saves = config.get_minecraft_dir() / "saves"
-        if shared_saves.is_symlink() or not shared_saves.is_dir():
-            return
-        profile_saves.mkdir(parents=True, exist_ok=True)
-        try:
-            children = list(shared_saves.iterdir())
-            for world in children:
-                if world.is_symlink() or not world.is_dir():
-                    continue
-                target = profile_saves / world.name
-                if target.exists():
-                    continue
-
-                def ignore_links(directory, names):
-                    return [
-                        name for name in names
-                        if (Path(directory) / name).is_symlink()
-                    ]
-
-                shutil.copytree(world, target, ignore=ignore_links)
-        except OSError as exc:
-            self.after(
-                0,
-                lambda error=exc: self._log(
-                    f"⚠ Could not copy an existing world into this profile: {error}"
-                ),
-            )
+        return entry.get("type") == profile["type"]
 
     def _on_play_btn(self):
         profile = self._current_profile()
@@ -1981,15 +899,10 @@ class MainWindow(ctk.CTk):
         ram_gb       = self.ram_var.get()
         use_dgpu     = self.cfg.get("use_dgpu", False)
         needs_install = not self._is_installed_for_profile(profile)
-        needs_profile_mods = (
-            profile_type == "fabric"
-            and not profile.get("source_modpack")
-            and not profile.get("launcher_mods_initialized")
-        )
 
         self._set_busy(True)
         self._log(f"\n{'─'*40}")
-        if needs_install or needs_profile_mods:
+        if needs_install:
             self._log(f"📦 Installing '{profile['name']}' ({mc_version}, {profile_type})…")
         else:
             self._log(f"🚀 Launching '{profile['name']}'…")
@@ -1997,7 +910,6 @@ class MainWindow(ctk.CTk):
         def worker():
             try:
                 fabric_profile_id = None
-                self._migrate_shared_worlds(profile)
 
                 if needs_install:
                     from core.java_manager import install_java
@@ -2017,7 +929,11 @@ class MainWindow(ctk.CTk):
                             mc_version,
                             log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
                             progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
-                            loader_version=profile.get("fabric_loader_version"),
+                        )
+                        install_mods(
+                            mc_version, enabled_mods,
+                            log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                            progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
                         )
                     self.cfg.setdefault("installed_versions", {})[mc_version] = {
                         "fabric_profile_id": fabric_profile_id,
@@ -2032,17 +948,6 @@ class MainWindow(ctk.CTk):
                         .get("fabric_profile_id")
                     )
 
-                if needs_profile_mods:
-                    install_mods(
-                        mc_version, enabled_mods,
-                        log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
-                        progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
-                        mods_dir=modrinth.profile_instance_dir(profile) / "mods",
-                    )
-                    profile["launcher_mods_initialized"] = True
-                    config.save(self.cfg)
-
-
                 self.after(0, lambda: self._log("🚀 Starting game…"))
                 proc = launch(
                     mc_version=mc_version,
@@ -2053,7 +958,6 @@ class MainWindow(ctk.CTk):
                     log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
                     auth_data=auth_data,
                     use_dgpu=use_dgpu,
-                    game_dir=modrinth.profile_instance_dir(profile),
                 )
                 self.after(0, lambda: self._log("🎮 Game launched!"))
                 for line in proc.stdout:
@@ -2105,7 +1009,6 @@ class MainWindow(ctk.CTk):
 
         self.play_btn.configure(text=btn_text, state=state_play)
         self.del_btn.configure(state="normal" if has_profile else "disabled")
-        self.edit_btn.configure(state="normal" if has_profile else "disabled")
 
     def _on_progress(self, task: str, pct: int):
         self.progress_bar.set(pct / 100)
@@ -2123,7 +1026,6 @@ class MainWindow(ctk.CTk):
         self.play_btn.configure(state=state)
         self.new_btn.configure(state=state)
         self.del_btn.configure(state=state)
-        self.edit_btn.configure(state=state)
         if not busy:
             self._refresh_buttons()  # restore correct label after busy clears
 

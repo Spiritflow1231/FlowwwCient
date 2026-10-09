@@ -5,14 +5,13 @@ Builds the JVM classpath and launches Minecraft, with or without Fabric.
 
 import os
 import json
-import shutil
 from core.auth import CLIENT_ID
 import subprocess
 import platform
 from pathlib import Path
 from typing import Callable
 
-from core.installer import get_launcher_dir, get_mods_dir, get_shared_assets_dir
+from core.installer import get_launcher_dir, get_shared_assets_dir
 from core.config import get_minecraft_dir
 
 
@@ -106,9 +105,15 @@ def launch(
     log: Callable,
     auth_data: dict | None = None,
     use_dgpu: bool = False,
+    game_dir: Path | None = None,
 ) -> subprocess.Popen:
+    if profile_type not in {"vanilla", "fabric"}:
+        raise ValueError(f"Unsupported Minecraft profile type: {profile_type}")
+    if profile_type == "fabric" and not fabric_profile_id:
+        raise ValueError("Fabric profile ID missing.")
+
     base = get_launcher_dir()
-    game_dir = get_minecraft_dir()
+    game_dir = game_dir or get_minecraft_dir()
     game_dir.mkdir(parents=True, exist_ok=True)
 
     java = _find_java(mc_version)
@@ -123,28 +128,12 @@ def launch(
     # Load Fabric profile if applicable
     fabric_profile = None
     if profile_type == "fabric":
-        if not fabric_profile_id:
-            raise ValueError("Fabric profile ID missing.")
         fabric_json_path = (
             base / "versions" / fabric_profile_id / f"{fabric_profile_id}.json"
         )
         if not fabric_json_path.exists():
             raise FileNotFoundError(f"Fabric profile not found — please install first.")
         fabric_profile = json.loads(fabric_json_path.read_text())
-
-    # Handle mods folder
-    mods_dir = game_dir / "mods"
-    mods_dir.mkdir(exist_ok=True)
-    # Clear existing mods
-    for f in mods_dir.glob("*.jar"):
-        f.unlink()
-    # Copy mods in for fabric installs, leave empty for vanilla
-    if profile_type == "fabric":
-        for mod_jar in get_mods_dir(mc_version).glob("*.jar"):
-            shutil.copy2(mod_jar, mods_dir / mod_jar.name)
-        log(f"📦 Copied mods into .minecraft/mods/")
-    else:
-        log(f"🍦 Vanilla profile — mods folder cleared, running clean.")
 
     # Build classpath
     jars = _collect_classpath(base, version_json, fabric_profile, mc_version)
