@@ -16,13 +16,13 @@ def get_theme(name: str) -> dict:
     
     themes = {
         "overworld": {
-            "BG_PRIMARY": "#171525",
-            "BG_SECONDARY": "#25213b",
-            "BG_CONSOLE": "#100e19",
-            "BORDER_COL": "#40365f",
-            "ACCENT": "#7dd3fc",
-            "ACCENT_DARK": "#38bdf8",
-            "ACCENT_ALT": "#bae6fd",
+            "BG_PRIMARY": "#121416",
+            "BG_SECONDARY": "#1d2023",
+            "BG_CONSOLE": "#0b0d0f",
+            "BORDER_COL": "#393b3d",
+            "ACCENT": "#d6aa55",
+            "ACCENT_DARK": "#b88936",
+            "ACCENT_ALT": "#edc46f",
         },
         "nether": {
             "BG_PRIMARY": "#2e1a1a",

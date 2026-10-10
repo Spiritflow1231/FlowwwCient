@@ -41,7 +41,7 @@ jobs:
         run: |
           python -m PyInstaller revomc.spec --clean --noconfirm --distpath dist --workpath build/pyinstaller-windows
 
-      - name: Verify and smoke-test executable
+      - name: Verify Windows executable metadata
         shell: pwsh
         run: |
           if (-not (Test-Path .\dist\FlowwwClient.exe -PathType Leaf)) {
@@ -63,6 +63,13 @@ jobs:
           }
           Write-Host "EXE company metadata: $($versionInfo.CompanyName) (metadata only; this is not code signing)"
 
+      - name: Smoke-test executable
+        shell: pwsh
+        run: |
+          if (-not (Test-Path .\dist\FlowwwClient.exe -PathType Leaf)) {
+            throw "PyInstaller did not create dist/FlowwwClient.exe"
+          }
+          $executable = (Resolve-Path .\dist\FlowwwClient.exe).Path
           $diagnostics = Join-Path $env:RUNNER_TEMP "FlowwwClient-smoke.log"
           $env:FLOWWWCLIENT_SMOKE_LOG = $diagnostics
           $process = Start-Process `

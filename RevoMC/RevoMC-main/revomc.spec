@@ -5,6 +5,7 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 PROJECT_ROOT = Path(SPECPATH).resolve()
+VERSION_FILE = PROJECT_ROOT / "version_info.txt"
 DEBUG_BUILD = os.environ.get("FLOWWWCLIENT_DEBUG", "").lower() in {"1", "true", "yes"}
 BUILD_NAME = "FlowwwClient-debug" if DEBUG_BUILD else "FlowwwClient"
 
@@ -87,7 +88,11 @@ elif sys.platform.startswith('linux'):
               console=DEBUG_BUILD)
     coll = COLLECT(exe, a.binaries, a.datas, strip=True, upx=False, name='FlowwwClient')
 else:
+    if not VERSION_FILE.is_file():
+        raise FileNotFoundError(f"Windows version resource not found: {VERSION_FILE}")
+
     exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
               name=BUILD_NAME, debug=DEBUG_BUILD, strip=False, upx=False,
               console=DEBUG_BUILD, windowed=not DEBUG_BUILD,
-              disable_windowed_traceback=not DEBUG_BUILD, icon=None)
+              disable_windowed_traceback=not DEBUG_BUILD, icon=None,
+              version=str(VERSION_FILE))

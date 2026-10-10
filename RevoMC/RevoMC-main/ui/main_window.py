@@ -115,13 +115,14 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         ("Shader Packs", "shaderpacks"),
     ]
 
-    def __init__(self, parent, profile):
+    def __init__(self, parent, profile, initial_category="mods"):
         super().__init__(parent)
 
         self.parent = parent
         self.profile = profile
         self.theme = parent.theme
-        self.category = "mods"
+        categories = {key for _, key in self.CATEGORIES}
+        self.category = initial_category if initial_category in categories else "mods"
         self.tab = "Installed"
         self._working = False
         self._cancel_event = None
@@ -1256,6 +1257,117 @@ class SettingsDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class AccountsWindow(ctk.CTkToplevel):
+    """Account controls backed by the launcher's existing auth implementation."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.theme = parent.theme
+        self.title("Accounts — FlowwwClient")
+        self.geometry("500x390")
+        self.minsize(420, 340)
+        self.configure(fg_color=self.theme["BG_PRIMARY"])
+        self.transient(parent)
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=26, pady=24)
+        ctk.CTkLabel(
+            body,
+            text="Accounts",
+            text_color=self.theme["TEXT_FG"],
+            font=ctk.CTkFont(size=24, weight="bold"),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            body,
+            text="Offline usernames are local profiles and do not authenticate with Mojang.",
+            text_color=self.theme["TEXT_MUTED"],
+            wraplength=440,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 18))
+
+        self.mode_menu = ctk.CTkSegmentedButton(
+            body,
+            values=["Offline", "Microsoft"],
+            variable=parent.auth_mode_var,
+            command=parent._on_auth_mode_changed,
+            selected_color=self.theme["ACCENT"],
+            selected_hover_color=self.theme["ACCENT_DARK"],
+            unselected_color=self.theme["BG_SECONDARY"],
+        )
+        self.mode_menu.pack(anchor="w", pady=(0, 18))
+
+        offline = ctk.CTkFrame(
+            body,
+            fg_color=self.theme["BG_SECONDARY"],
+            corner_radius=10,
+            border_width=1,
+            border_color=self.theme["BORDER_COL"],
+        )
+        offline.pack(fill="x", pady=(0, 12))
+        ctk.CTkLabel(
+            offline,
+            text="LOCAL OFFLINE PROFILE",
+            text_color=self.theme["TEXT_MUTED"],
+            font=ctk.CTkFont(size=10, weight="bold"),
+        ).pack(anchor="w", padx=14, pady=(12, 5))
+        ctk.CTkEntry(
+            offline,
+            textvariable=parent.username_var,
+            placeholder_text="Enter an offline username",
+        ).pack(fill="x", padx=14, pady=(0, 14))
+
+        online = ctk.CTkFrame(
+            body,
+            fg_color=self.theme["BG_SECONDARY"],
+            corner_radius=10,
+            border_width=1,
+            border_color=self.theme["BORDER_COL"],
+        )
+        online.pack(fill="x")
+        ctk.CTkLabel(
+            online,
+            text="MICROSOFT ACCOUNT",
+            text_color=self.theme["TEXT_MUTED"],
+            font=ctk.CTkFont(size=10, weight="bold"),
+        ).pack(anchor="w", padx=14, pady=(12, 4))
+        self.status = ctk.CTkLabel(
+            online, text="", text_color=self.theme["TEXT_FG"], anchor="w"
+        )
+        self.status.pack(fill="x", padx=14, pady=(0, 8))
+        buttons = ctk.CTkFrame(online, fg_color="transparent")
+        buttons.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkButton(
+            buttons,
+            text="Sign in with Microsoft",
+            fg_color=self.theme["MS_BLUE"],
+            hover_color=self.theme["MS_BLUE_DARK"],
+            command=parent._on_ms_signin,
+        ).pack(side="left")
+        ctk.CTkButton(
+            buttons,
+            text="Sign out",
+            fg_color="transparent",
+            border_width=1,
+            border_color=self.theme["BORDER_COL"],
+            text_color=self.theme["TEXT_FG"],
+            command=parent._on_ms_signout,
+        ).pack(side="left", padx=(8, 0))
+        self._refresh_status()
+
+    def _refresh_status(self):
+        if not self.winfo_exists():
+            return
+        account = self.parent._ms_account
+        if account:
+            self.status.configure(text=f"Signed in as {account.get('name', 'Microsoft account')}")
+        else:
+            self.status.configure(
+                text="Not signed in. Microsoft sign-in uses the official browser flow."
+            )
+        self.after(500, self._refresh_status)
+
+
 # ── Main Window ───────────────────────────────────────────────────────────────
 
 
@@ -1301,8 +1413,8 @@ class MainWindow(ctk.CTk):
 
     def _setup_ui(self):
         self.title("FlowwwClient")
-        self.geometry("1120x740")
-        self.minsize(960, 660)
+        self.geometry("1180x760")
+        self.minsize(900, 600)
         self.configure(fg_color=BG_PRIMARY)
 
         # Root vstack
@@ -1316,12 +1428,20 @@ class MainWindow(ctk.CTk):
         sidebar.pack(side="left", fill="y")
         sidebar.pack_propagate(False)
 
+        wordmark = ctk.CTkFrame(sidebar, fg_color="transparent")
+        wordmark.pack(anchor="w", padx=18, pady=(24, 2))
         ctk.CTkLabel(
-            sidebar,
-            text="⛏ FLOWWW",
-            font=ctk.CTkFont(size=22, weight="bold"),
+            wordmark,
+            text="ঌ",
+            font=ctk.CTkFont(size=27, weight="bold"),
             text_color=self.theme["ACCENT"],
-        ).pack(anchor="w", padx=20, pady=(28, 2))
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(
+            wordmark,
+            text="FlowwwClient",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=self.theme["TEXT_FG"],
+        ).pack(side="left")
 
         ctk.CTkLabel(
             sidebar,
@@ -1359,14 +1479,21 @@ class MainWindow(ctk.CTk):
             btn.pack(fill="x", padx=12, pady=4)
             self.nav_buttons[key] = btn
 
-        nav_button("dashboard", "▦   Dashboard",
-                   lambda: self._show_page("dashboard"))
-        nav_button("profiles", "▤   Profiles",
+        nav_button("home", "⌂   Home", lambda: self._show_page("home"))
+        nav_button("profiles", "▤   Profiles / Instances",
                    lambda: self._show_page("profiles"))
-        nav_button("console", "⌘   Console",
+        nav_button("mods", "▧   Mods",
+                   lambda: self._open_profile_content("mods"))
+        nav_button("modpacks", "▣   Modpacks",
+                   lambda: self._open_profile_content("modpacks"))
+        nav_button("resourcepacks", "▤   Resource Packs",
+                   lambda: self._open_profile_content("resourcepacks"))
+        nav_button("shaders", "◈   Shaders",
+                   lambda: self._open_profile_content("shaderpacks"))
+        nav_button("accounts", "◉   Accounts", self._open_accounts)
+        nav_button("settings", "⚙   Settings", self._open_settings_page)
+        nav_button("console", "⌘   Console / Logs",
                    lambda: self._show_page("console"))
-        nav_button("settings", "⚙   Settings",
-                   self._on_open_settings)
 
 
         # ── Header ────────────────────────────────────────────────────────────
@@ -1375,7 +1502,7 @@ class MainWindow(ctk.CTk):
 
         # Title block
         self.title_lbl = ctk.CTkLabel(
-            header, text="⛏  FlowwwClient",
+            header, text="ঌ  FlowwwClient",
             font=ctk.CTkFont(size=28, weight="bold"),
             text_color=self.theme["ACCENT"],
         )
@@ -1459,7 +1586,7 @@ class MainWindow(ctk.CTk):
 
         self._build_left(content)
         self._build_right(content)
-        self._show_page("dashboard")
+        self._show_page("home")
 
     def _show_page(self, page):
         if not hasattr(self, "left_panel") or not hasattr(self, "right_panel"):
@@ -1473,7 +1600,7 @@ class MainWindow(ctk.CTk):
         content.columnconfigure(0, weight=1)
         content.columnconfigure(1, weight=1)
 
-        if page == "dashboard":
+        if page in ("home", "dashboard"):
             self.left_panel.grid(
                 row=0, column=0, sticky="nsew", padx=(0, 8)
             )
@@ -1493,13 +1620,41 @@ class MainWindow(ctk.CTk):
                 row=0, column=0, columnspan=2, sticky="nsew"
             )
 
-        for key, btn in self.nav_buttons.items():
+        self._set_active_navigation("home" if page == "dashboard" else page)
+
+    def _set_active_navigation(self, page):
+        for key, button in self.nav_buttons.items():
             active = key == page
-            btn.configure(
+            button.configure(
                 fg_color=self.theme["ACCENT"] if active else "transparent",
-                hover_color=GREEN_DARK if active else BG_PRIMARY,
-                text_color=BG_PRIMARY if active else TEXT_FG,
+                hover_color=self.theme["ACCENT_DARK"] if active else self.theme["BG_PRIMARY"],
+                text_color=self.theme["BG_PRIMARY"] if active else self.theme["TEXT_FG"],
             )
+
+    def _open_profile_content(self, category):
+        profile = self._current_profile()
+        self._set_active_navigation({
+            "mods": "mods",
+            "modpacks": "modpacks",
+            "resourcepacks": "resourcepacks",
+            "shaderpacks": "shaders",
+        }[category])
+        if not profile:
+            messagebox.showinfo(
+                "Select a profile",
+                "Create or select a profile before managing its content.",
+                parent=self,
+            )
+            return
+        ProfileEditorWindow(self, profile, initial_category=category)
+
+    def _open_accounts(self):
+        self._set_active_navigation("accounts")
+        AccountsWindow(self)
+
+    def _open_settings_page(self):
+        self._set_active_navigation("settings")
+        self._on_open_settings()
 
     def _build_left(self, parent):
         left = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1804,7 +1959,8 @@ class MainWindow(ctk.CTk):
 
         for i, p in enumerate(profiles):
             type_tag = "🟢 Fabric" if p["type"] == "fabric" else "🍦 Vanilla"
-            label    = f"{p['name']}\n{p['mc_version']}  ·  {type_tag}"
+            install_status = "Installed" if self._is_installed_for_profile(p) else "Not installed"
+            label = f"{p['name']}\n{p['mc_version']}  ·  {type_tag}  ·  {install_status}"
             is_active = p["name"] == active
 
             btn = ctk.CTkButton(
@@ -2116,6 +2272,7 @@ class MainWindow(ctk.CTk):
         self.progress_bar.set(1.0 if success else 0.0)
         self._log(f"{'✅' if success else '❌'} {message}")
         self.status_lbl.configure(text="Ready.")
+        self._refresh_profile_list()
         self._refresh_buttons()
 
     def _set_busy(self, busy: bool):
@@ -2165,6 +2322,13 @@ class MainWindow(ctk.CTk):
         self.new_btn.configure(
             border_color=t["ACCENT_ALT"], text_color=t["ACCENT_ALT"], hover_color=t["ACCENT_ALT"],
         )
+        for key, button in self.nav_buttons.items():
+            active = button.cget("fg_color") != "transparent"
+            button.configure(
+                fg_color=t["ACCENT"] if active else "transparent",
+                hover_color=t["ACCENT_DARK"] if active else t["BG_PRIMARY"],
+                text_color=t["BG_PRIMARY"] if active else t["TEXT_FG"],
+            )
         self._refresh_profile_list()
 
     # ── Microsoft Auth UI ─────────────────────────────────────────────────────

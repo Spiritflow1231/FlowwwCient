@@ -1,8 +1,8 @@
-# ⛏ RevoMC
+# FlowwwClient
 
 A custom, lightweight Minecraft Java launcher that auto-installs **Sodium**, **Iris Shaders**, **Lithium** and **FerriteCore** so you never have to hunt for mods manually again. Optimised for low end computers and gamers trying to squeeze the maximum performance out of the game with minimal setup.
 
-RevoMC is simply as good as vanilla Minecraft gets.
+FlowwwClient provides a premium-style interface while preserving the real Minecraft install and launch flow.
 
 <img width="2018" height="1492" alt="image" src="https://github.com/user-attachments/assets/09829429-8c4c-4a16-a8aa-db97e608f1b5" />
 
@@ -21,6 +21,7 @@ RevoMC is simply as good as vanilla Minecraft gets.
 - 🟢 Auto-downloads Java (Java 8/17/21/25 based on MC version) — no manual Java install needed
 - 🟢 Dedicated GPU Support: Automatically enables dGPU mode on hybrid graphics systems (Windows Registry & Linux Prime)
 - 🟢 Multiple profiles — run vanilla and modded side by side
+- 🟢 Dedicated navigation for Home, Profiles, Mods, Modpacks, Resource Packs, Shaders, Accounts, Settings, and Console
 - 🟢 Per-profile mod toggles — enable or disable individual mods per profile
 - 🟢 Profile content manager with live Modrinth search for mods, resource packs, modpacks, datapacks, and shader packs
 - 🟢 Per-profile game directories for mods, resource packs, shaders, worlds, and settings
@@ -101,18 +102,16 @@ python -m PyInstaller revomc.spec --clean --noconfirm --distpath dist/debug --wo
 Remove-Item Env:FLOWWWCLIENT_DEBUG
 ```
 
-GitHub Actions builds and smoke-tests the release executable on a Windows
-runner. To download it, open the repository's **Actions** tab, select the
-latest successful **Build FlowwwClient for Windows** run, then download
-`FlowwwClient-Windows-EXE` for the executable or `FlowwwClient-Windows-ZIP`
-for the packaged copy. The executable itself is a single-file application;
+GitHub Actions builds and smoke-tests the executable on a Windows runner on
+pushes to `main` and on manual dispatch. To download it, open the repository's
+**Actions** tab, select a **Build FlowwwClient for Windows** run, then download
+the `FlowwwClient-Windows` ZIP artifact. The executable itself is a single-file application;
 downloaded Java runtimes, Minecraft data, and launcher configuration are stored
 in the user's writable `~/.revomc` directory (not in the application
 installation directory).
 
-Pushing a `v*` tag runs the same checks and build and creates a **draft** GitHub
-Release containing `FlowwwClient.exe`. Review the draft on the repository's
-**Releases** page and publish it manually when it is ready.
+The executable contains Windows product metadata but is not code-signed. A
+verified publisher identity requires an appropriate signing certificate.
 
 ---
 

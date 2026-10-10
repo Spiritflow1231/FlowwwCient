@@ -1,5 +1,7 @@
 import sys
 import platform
+import os
+from pathlib import Path
 
 # ── Smoke test ────────────────────────────────────────────────────────────────
 # Run with --smoke-test to verify all modules are importable in the frozen
@@ -20,14 +22,20 @@ if "--smoke-test" in sys.argv:
             __import__(_mod)
         except Exception as _e:
             _failed.append(f"{_mod}: {_e}")
+    _result = (
+        "SMOKE TEST FAILED:\n" + "\n".join(f"  {_failure}" for _failure in _failed)
+        if _failed
+        else "SMOKE TEST PASSED"
+    )
+    _diagnostics = os.environ.get("FLOWWWCLIENT_SMOKE_LOG")
+    if _diagnostics:
+        Path(_diagnostics).write_text(_result + "\n", encoding="utf-8")
     if _failed:
         if sys.stderr is not None:
-            print("SMOKE TEST FAILED:", file=sys.stderr)
-            for _f in _failed:
-                print(f"  {_f}", file=sys.stderr)
+            print(_result, file=sys.stderr)
         sys.exit(1)
     if sys.stdout is not None:
-        print("SMOKE TEST PASSED")
+        print(_result)
     sys.exit(0)
 # ─────────────────────────────────────────────────────────────────────────────
 
