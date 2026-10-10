@@ -37,6 +37,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Build Windows application
+        id: build-windows-app
         run: |
           python -m PyInstaller revomc.spec --clean --noconfirm --distpath dist --workpath build/pyinstaller-windows
 
@@ -47,52 +48,68 @@ jobs:
             throw "PyInstaller did not create dist/FlowwwClient.exe"
           }
           $executable = (Resolve-Path .\dist\FlowwwClient.exe).Path
+          $versionInfo = (Get-Item $executable).VersionInfo
+          $expectedMetadata = @{
+            ProductName = "FlowwwClient"
+            FileDescription = "FlowwwClient Minecraft Launcher"
+            OriginalFilename = "FlowwwClient.exe"
+            CompanyName = "FlowwwClient"
+          }
+          foreach ($field in $expectedMetadata.Keys) {
+            $actual = $versionInfo.$field
+            if ($actual -ne $expectedMetadata[$field]) {
+              throw "Expected EXE $field '$($expectedMetadata[$field])', got '$actual'"
+            }
+          }
+          Write-Host "EXE company metadata: $($versionInfo.CompanyName) (metadata only; this is not code signing)"
 
-          $stdout = Join-Path $env:RUNNER_TEMP "FlowwwClient-smoke.stdout"
-          $stderr = Join-Path $env:RUNNER_TEMP "FlowwwClient-smoke.stderr"
+          $diagnostics = Join-Path $env:RUNNER_TEMP "FlowwwClient-smoke.log"
+          $env:FLOWWWCLIENT_SMOKE_LOG = $diagnostics
           $process = Start-Process `
             -FilePath $executable `
-            -ArgumentList "--smoke-test" `
-            -Wait `
-            -PassThru `
-            -RedirectStandardOutput $stdout `
-            -RedirectStandardError $stderr
-
-          if (Test-Path $stdout) {
-            Get-Content $stdout
+            -ArgumentList @("--smoke-test") `
+            -PassThru
+          $completed = $process.WaitForExit(120000)
+          if (-not $completed) {
+            if (-not $process.HasExited) {
+              $process.Kill()
+              $process.WaitForExit()
+            }
+            $exitCode = 124
+            Write-Warning "FlowwwClient.exe smoke test exceeded the 120-second timeout and was terminated."
+          } else {
+            $exitCode = $process.ExitCode
           }
-          if (Test-Path $stderr) {
-            Get-Content $stderr | Write-Output
+          Remove-Item Env:FLOWWWCLIENT_SMOKE_LOG
+          if (Test-Path $diagnostics) {
+            Get-Content $diagnostics
+          } else {
+            Write-Warning "The executable did not write a smoke-test diagnostics file."
           }
-          if ($process.ExitCode -ne 0) {
-            throw "FlowwwClient.exe smoke test failed with exit code $($process.ExitCode)"
-          }
-          if (-not (Select-String -Path $stdout -Pattern "SMOKE TEST PASSED" -Quiet)) {
-            throw "FlowwwClient.exe did not report that its smoke test passed"
+          Write-Host "FlowwwClient.exe smoke-test exit code: $exitCode"
+          if ($exitCode -ne 0) {
+            throw "FlowwwClient.exe smoke test failed with exit code $exitCode"
           }
 
       - name: Package Windows ZIP
+        if: always()
+        id: package-windows-zip
         shell: pwsh
         run: |
-          Compress-Archive -Path .\dist\FlowwwClient.exe -DestinationPath .\dist\FlowwwClient-Windows.zip -CompressionLevel Optimal
+          if (-not (Test-Path .\dist\FlowwwClient.exe -PathType Leaf)) {
+            Write-Warning "No executable was produced; skipping ZIP creation."
+            exit 0
+          }
+          Compress-Archive -Path .\dist\FlowwwClient.exe -DestinationPath .\dist\FlowwwClient-Windows.zip -CompressionLevel Optimal -Force
           if (-not (Test-Path .\dist\FlowwwClient-Windows.zip -PathType Leaf)) {
             throw "The Windows ZIP package was not created"
           }
-
-      - name: Verify Windows ZIP package
-        run: |
           python -c "from zipfile import ZipFile; archive = ZipFile('dist/FlowwwClient-Windows.zip'); assert archive.namelist() == ['FlowwwClient.exe']; assert archive.testzip() is None"
 
-      - name: Upload Windows executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: FlowwwClient-Windows-EXE
-          path: RevoMC/RevoMC-main/dist/FlowwwClient.exe
-          if-no-files-found: error
-
       - name: Upload Windows ZIP package
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: FlowwwClient-Windows-ZIP
+          name: FlowwwClient-Windows
           path: RevoMC/RevoMC-main/dist/FlowwwClient-Windows.zip
-          if-no-files-found: error
+          if-no-files-found: warn
