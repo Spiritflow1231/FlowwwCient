@@ -12,6 +12,7 @@ if "--smoke-test" in sys.argv:
     _modules = [
         "core.auth", "core.config", "core.installer",
         "core.launcher", "core.java_manager", "core.modrinth", "core.updater",
+        "core.accounts", "core.profiles", "core.skins",
         "ui.main_window", "ui.theme",
         "customtkinter", "certifi",
         "minecraft_launcher_lib",
