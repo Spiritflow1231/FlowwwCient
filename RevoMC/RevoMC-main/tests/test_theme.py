@@ -3,9 +3,32 @@ import unittest
 import customtkinter as ctk
 
 from ui.theme import apply_customtkinter_palette, get_theme
+from ui import main_window
 
 
 class CrimsonThemeTests(unittest.TestCase):
+    def test_main_window_module_level_color_tokens_match_theme(self):
+        theme = get_theme()
+        tokens = {
+            "BG_PRIMARY": "BG_PRIMARY",
+            "BG_SECONDARY": "BG_SECONDARY",
+            "BG_CONSOLE": "BG_CONSOLE",
+            "BG_CARD": "BG_CARD",
+            "BORDER_COL": "BORDER_COL",
+            "GREEN": "ACCENT",
+            "GREEN_DARK": "ACCENT_DARK",
+            "BLUE": "ACCENT_ALT",
+            "RED": "RED",
+            "MS_BLUE": "MS_BLUE",
+            "MS_BLUE_DARK": "MS_BLUE_DARK",
+            "TEXT_FG": "TEXT_FG",
+            "TEXT_MUTED": "TEXT_MUTED",
+            "TEXT_LABEL": "TEXT_LABEL",
+        }
+        for name, theme_key in tokens.items():
+            with self.subTest(name=name):
+                self.assertEqual(getattr(main_window, name), theme[theme_key])
+
     def test_legacy_theme_names_resolve_to_the_crimson_brand_palette(self):
         for name in ("crimson", "overworld", "nether", "end"):
             with self.subTest(name=name):

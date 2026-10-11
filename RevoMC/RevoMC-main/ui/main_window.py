@@ -58,6 +58,7 @@ _t = get_theme(config.load().get("theme", "overworld"))
 BG_PRIMARY   = _t["BG_PRIMARY"]
 BG_SECONDARY = _t["BG_SECONDARY"]
 BG_CONSOLE   = _t["BG_CONSOLE"]
+BG_CARD      = _t["BG_CARD"]
 BORDER_COL   = _t["BORDER_COL"]
 GREEN        = _t["ACCENT"]
 GREEN_DARK   = _t["ACCENT_DARK"]
@@ -3830,7 +3831,7 @@ class MainWindow(ctk.CTk):
             if refreshed:
                 def _update():
                     self._ms_account = refreshed
-                    self._refresh_auth_panel()
+                    segit push origin mainlf._refresh_auth_panel()
                     self._refresh_buttons()
                 self.after(0, _update)
             else:

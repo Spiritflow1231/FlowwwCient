@@ -59,6 +59,9 @@ a = Analysis(
         'core.launcher',
         'core.config',
         'core.java_manager',
+        'core.accounts',
+        'core.profiles',
+        'core.skins',
         'ui.main_window',
         'ui.theme',
         # Merge auto-collected hidden imports from requirements.txt

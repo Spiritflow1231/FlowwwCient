@@ -31,7 +31,7 @@ class WindowsWorkflowPackagingTests(unittest.TestCase):
         workflow = workflow_path.read_text(encoding="utf-8")
 
         self.assertIn(
-            "      - name: Package Windows ZIP\n        if: always() && steps.sign-windows-executable.outcome != 'failure'",
+            "      - name: Package Windows ZIP\n        if: always() && steps.sign-windows-executable.outcome != 'failure' && steps.verify-authenticode-signature.outcome != 'failure'",
             workflow,
         )
         self.assertIn(
@@ -54,12 +54,15 @@ class WindowsWorkflowPackagingTests(unittest.TestCase):
         self.assertLess(smoke_test, packaging)
         self.assertIn("secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64", workflow)
         self.assertIn("secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD", workflow)
+        self.assertIn("vars.WINDOWS_SIGNING_EXPECTED_PUBLISHER", workflow)
         self.assertIn("vars.WINDOWS_TIMESTAMP_SERVER_URL", workflow)
         self.assertIn("Write-Warning \"UNSIGNED:", workflow)
         self.assertIn("Both WINDOWS_SIGNING_CERTIFICATE_BASE64 and WINDOWS_SIGNING_CERTIFICATE_PASSWORD must be configured.", workflow)
         self.assertIn("Join-Path $env:RUNNER_TEMP", workflow)
         self.assertIn("/fd SHA256 /tr $timestampServer /td SHA256", workflow)
         self.assertIn("& $signTool verify /pa /v $executable", workflow)
+        self.assertIn("$signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid", workflow)
+        self.assertIn("$signature.SignerCertificate.Subject -cne $env:WINDOWS_SIGNING_EXPECTED_PUBLISHER", workflow)
         self.assertIn("finally {", workflow)
         self.assertIn("Remove-Item -LiteralPath $certificatePath", workflow)
 

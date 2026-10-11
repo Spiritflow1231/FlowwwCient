@@ -69,6 +69,7 @@ jobs:
         env:
           WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
           WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+          WINDOWS_SIGNING_EXPECTED_PUBLISHER: ${{ vars.WINDOWS_SIGNING_EXPECTED_PUBLISHER }}
           WINDOWS_TIMESTAMP_SERVER_URL: ${{ vars.WINDOWS_TIMESTAMP_SERVER_URL || 'http://timestamp.digicert.com' }}
         run: |
           $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERTIFICATE_BASE64)
@@ -80,6 +81,9 @@ jobs:
           }
           if (-not $hasCertificate -or -not $hasPassword) {
             throw "Both WINDOWS_SIGNING_CERTIFICATE_BASE64 and WINDOWS_SIGNING_CERTIFICATE_PASSWORD must be configured."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_PUBLISHER)) {
+            throw "Set the WINDOWS_SIGNING_EXPECTED_PUBLISHER Actions variable to the exact Subject of the trusted code-signing certificate."
           }
 
           $timestampServer = $env:WINDOWS_TIMESTAMP_SERVER_URL
@@ -127,6 +131,7 @@ jobs:
           }
 
       - name: Verify Authenticode signature
+        id: verify-authenticode-signature
         if: steps.sign-windows-executable.outputs.signed == 'true'
         shell: pwsh
         run: |
@@ -146,7 +151,14 @@ jobs:
           if ($verifyExitCode -ne 0) {
             throw "Authenticode signature verification failed with exit code $verifyExitCode."
           }
-          Write-Host "Authenticode signature verification passed."
+          $signature = Get-AuthenticodeSignature -FilePath $executable
+          if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "Authenticode signature status is '$($signature.Status)', not Valid."
+          }
+          if ($signature.SignerCertificate.Subject -cne $env:WINDOWS_SIGNING_EXPECTED_PUBLISHER) {
+            throw "The verified signer subject does not match WINDOWS_SIGNING_EXPECTED_PUBLISHER."
+          }
+          Write-Host "Authenticode signature verified for configured publisher: $($signature.SignerCertificate.Subject)"
 
       - name: Smoke-test executable
         shell: pwsh
@@ -184,7 +196,7 @@ jobs:
           }
 
       - name: Package Windows ZIP
-        if: always() && steps.sign-windows-executable.outcome != 'failure'
+        if: always() && steps.sign-windows-executable.outcome != 'failure' && steps.verify-authenticode-signature.outcome != 'failure'
         id: package-windows-zip
         shell: pwsh
         run: |
