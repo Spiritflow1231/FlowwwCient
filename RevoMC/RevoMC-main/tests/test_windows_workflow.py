@@ -31,7 +31,7 @@ class WindowsWorkflowPackagingTests(unittest.TestCase):
         workflow = workflow_path.read_text(encoding="utf-8")
 
         self.assertIn(
-            "      - name: Package Windows ZIP\n        if: always()",
+            "      - name: Package Windows ZIP\n        if: always() && steps.sign-windows-executable.outcome != 'failure'",
             workflow,
         )
         self.assertIn(
@@ -40,6 +40,28 @@ class WindowsWorkflowPackagingTests(unittest.TestCase):
         )
         self.assertIn("name: FlowwwClient-Windows", workflow)
         self.assertIn("dist/FlowwwClient-Windows.zip", workflow)
+
+    def test_authenticode_signing_is_configurable_and_verified_before_packaging(self):
+        workflow_path = Path(__file__).parents[3] / ".github" / "workflows" / "build-windows.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+
+        signing = workflow.index("- name: Sign Windows executable")
+        verification = workflow.index("- name: Verify Authenticode signature")
+        smoke_test = workflow.index("- name: Smoke-test executable")
+        packaging = workflow.index("- name: Package Windows ZIP")
+        self.assertLess(signing, verification)
+        self.assertLess(verification, smoke_test)
+        self.assertLess(smoke_test, packaging)
+        self.assertIn("secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64", workflow)
+        self.assertIn("secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD", workflow)
+        self.assertIn("vars.WINDOWS_TIMESTAMP_SERVER_URL", workflow)
+        self.assertIn("Write-Warning \"UNSIGNED:", workflow)
+        self.assertIn("Both WINDOWS_SIGNING_CERTIFICATE_BASE64 and WINDOWS_SIGNING_CERTIFICATE_PASSWORD must be configured.", workflow)
+        self.assertIn("Join-Path $env:RUNNER_TEMP", workflow)
+        self.assertIn("/fd SHA256 /tr $timestampServer /td SHA256", workflow)
+        self.assertIn("& $signTool verify /pa /v $executable", workflow)
+        self.assertIn("finally {", workflow)
+        self.assertIn("Remove-Item -LiteralPath $certificatePath", workflow)
 
 
 if __name__ == "__main__":
