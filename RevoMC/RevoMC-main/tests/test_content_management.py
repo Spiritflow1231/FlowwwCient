@@ -99,7 +99,7 @@ class InstalledContentDiscoveryTests(unittest.TestCase):
             )
             self.assertEqual(
                 [path.name for path in first_shaders],
-                ["Directory Shader", "shader.zip"],
+                ["shader.zip"],
             )
             self.assertNotIn(profiles["second"] / "resourcepacks" / "other.zip", first_resources)
             self.assertNotIn(profiles["second"] / "shaderpacks" / "other.zip", first_shaders)
@@ -147,6 +147,104 @@ class InstalledContentDiscoveryTests(unittest.TestCase):
 
             editor._render_installed_record.assert_called_once()
             editor._render_installed_file.assert_not_called()
+
+    def test_installed_tab_lists_both_unrecorded_mod_jars_in_instance_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            mods_dir = Path(temp) / "instance" / "mods"
+            mods_dir.mkdir(parents=True)
+            for filename in ("fabric-api.jar", "sodium.jar"):
+                with zipfile.ZipFile(mods_dir / filename, "w") as jar:
+                    jar.writestr(
+                        "fabric.mod.json",
+                        json.dumps({
+                            "id": filename.removesuffix(".jar"),
+                            "name": filename.removesuffix(".jar").title(),
+                            "version": "1.0.0",
+                        }),
+                    )
+            editor = object.__new__(ProfileEditorWindow)
+            editor.category = "mods"
+            editor.profile = {"instance_id": "profile"}
+            editor.parent = SimpleNamespace(cfg={"profiles": []})
+            editor.search = _Widget()
+            editor.search.get = Mock(return_value="")
+            editor._category_directory = Mock(return_value=mods_dir)
+            editor._render_installed_record = Mock()
+            editor._render_installed_file = Mock()
+            editor._show_state = Mock()
+
+            with patch.object(
+                modrinth,
+                "list_installed_files",
+                return_value=sorted(mods_dir.glob("*.jar")),
+            ):
+                editor._show_installed()
+
+            self.assertEqual(editor._render_installed_file.call_count, 2)
+            self.assertEqual(
+                {
+                    call.args[0].name
+                    for call in editor._render_installed_file.call_args_list
+                },
+                {"fabric-api.jar", "sodium.jar"},
+            )
+
+    def test_browse_state_recognizes_unrecorded_modrinth_project_jar(self):
+        with tempfile.TemporaryDirectory() as temp:
+            instance = Path(temp) / "instance"
+            mods = instance / "mods"
+            mods.mkdir(parents=True)
+            with zipfile.ZipFile(mods / "example.jar", "w") as jar:
+                jar.writestr(
+                    "fabric.mod.json",
+                    json.dumps({
+                        "id": "example",
+                        "custom": {"modrinth": {"project_id": "project-id"}},
+                    }),
+                )
+            editor = object.__new__(ProfileEditorWindow)
+            editor.category = "mods"
+            editor.profile = {"instance_id": "profile"}
+
+            with patch.object(modrinth, "profile_instance_dir", return_value=instance):
+                self.assertTrue(editor._project_installed("project-id"))
+
+    def test_installer_records_bootstrap_modrinth_metadata(self):
+        from core import installer
+
+        profile = {}
+
+        def fake_install(name, project_id, _mc, _folder, _log, pinned_version_id=None, records=None):
+            filename = f"{name}.jar"
+            records.append({
+                "project_id": project_id,
+                "version_id": f"{name}-version",
+                "filename": filename,
+                "title": name,
+                "version": "1.2.3",
+            })
+            return [filename], {}
+
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(installer, "_install_single_mod", side_effect=fake_install):
+                installer.install_mods(
+                    "1.21.1",
+                    ["sodium"],
+                    lambda _message: None,
+                    lambda *_args: None,
+                    mods_dir=Path(temp) / "mods",
+                    profile=profile,
+                )
+
+        records = profile["installed_content"]["mods"]
+        self.assertEqual(
+            {record["project_id"] for record in records},
+            {installer.FABRIC_API_ID, installer.AVAILABLE_MODS["sodium"]["id"]},
+        )
+        self.assertTrue(all(
+            record.get("version_id") and record.get("filename") and record.get("title")
+            for record in records
+        ))
 
     @unittest.skipIf(os.name == "nt", "Creating symlinks may require Windows privileges")
     def test_discovers_pack_directories_and_rejects_symlinks(self):

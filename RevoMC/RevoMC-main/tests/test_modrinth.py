@@ -91,6 +91,65 @@ class ModrinthContentTests(unittest.TestCase):
         self.assertEqual(len(versions), 1)
         self.assertEqual(versions[0]["loaders"], ["fabric"])
 
+    def test_resolves_required_dependencies_recursively_and_warns_on_incompatible(self):
+        root = {
+            "project_id": "root",
+            "name": "Root Mod",
+            "dependencies": [
+                {"project_id": "first", "dependency_type": "required"},
+                {"project_id": "blocked", "dependency_type": "incompatible"},
+            ],
+        }
+        first = {
+            "id": "first-version",
+            "project_id": "first",
+            "dependencies": [
+                {"project_id": "second", "dependency_type": "required"},
+            ],
+        }
+        second = {"id": "second-version", "project_id": "second"}
+
+        def versions(project_id, category, game_version, loader):
+            self.assertEqual((category, game_version, loader), ("mods", "1.21.1", "fabric"))
+            return [{"first": first, "second": second}[project_id]]
+
+        with (
+            patch("core.modrinth.compatible_versions", side_effect=versions),
+            patch(
+                "core.modrinth._request_json",
+                side_effect=lambda url: {"title": url.rsplit("/", 1)[-1]},
+            ),
+        ):
+            resolved, warnings = modrinth.resolve_required_mod_dependencies(
+                root, "1.21.1", "fabric"
+            )
+
+        self.assertEqual([item[0] for item in resolved], ["second", "first"])
+        self.assertIn("blocked", warnings[0])
+
+    def test_skips_dependencies_already_installed(self):
+        root = {
+            "project_id": "root",
+            "dependencies": [
+                {"project_id": "already-there", "dependency_type": "required"},
+            ],
+        }
+        with (
+            patch("core.modrinth.compatible_versions") as versions,
+            patch("core.modrinth._request_json") as request,
+        ):
+            resolved, warnings = modrinth.resolve_required_mod_dependencies(
+                root,
+                "1.21.1",
+                "fabric",
+                installed_project_ids={"already-there"},
+            )
+
+        self.assertEqual(resolved, [])
+        self.assertEqual(warnings, [])
+        versions.assert_not_called()
+        request.assert_not_called()
+
     def test_imports_fabric_modpack_overrides_into_fresh_instance(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

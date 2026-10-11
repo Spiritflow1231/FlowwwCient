@@ -156,6 +156,196 @@ def compatible_versions(project_id: str, category: str, game_version: str, loade
     return compatible
 
 
+def resolve_required_mod_dependencies(
+    version: dict,
+    game_version: str,
+    loader: str,
+    installed_project_ids: set[str] | None = None,
+) -> tuple[list[tuple[str, str, dict]], list[str]]:
+    """Resolve compatible required mod dependencies recursively."""
+    installed = set(installed_project_ids or ())
+    visiting: set[str] = set()
+    resolved: list[tuple[str, str, dict]] = []
+    warnings: list[str] = []
+
+    def fetch_version(dependency: dict, project_id: str) -> dict | None:
+        version_id = dependency.get("version_id")
+        if version_id:
+            if not isinstance(version_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,80}", version_id
+            ):
+                warnings.append(f"Dependency {project_id} has an invalid version ID.")
+                return None
+            candidate = _request_json(
+                f"{MODRINTH_API}/version/{urllib.parse.quote(version_id, safe='')}"
+            )
+            if not isinstance(candidate, dict):
+                return None
+            loaders = candidate.get("loaders", [])
+            if (
+                game_version not in candidate.get("game_versions", [])
+                or loader not in loaders
+            ):
+                warnings.append(
+                    f"Required dependency {project_id} has no version compatible "
+                    f"with Minecraft {game_version} and {loader}."
+                )
+                return None
+            return candidate
+
+        matches = compatible_versions(project_id, "mods", game_version, loader)
+        if not matches:
+            warnings.append(
+                f"Required dependency {project_id} has no compatible version "
+                f"for Minecraft {game_version} and {loader}."
+            )
+            return None
+        return matches[0]
+
+    def visit(parent_version: dict, depth: int):
+        if depth > 64:
+            raise RuntimeError("Mod dependencies exceed the maximum nesting depth.")
+        dependencies = parent_version.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            return
+        for dependency in dependencies:
+            if not isinstance(dependency, dict):
+                continue
+            dependency_type = dependency.get("dependency_type")
+            project_id = dependency.get("project_id")
+            if dependency_type == "incompatible":
+                if isinstance(project_id, str):
+                    warnings.append(
+                        f"{project_id} is marked incompatible with "
+                        f"{parent_version.get('name', 'the selected mod')}."
+                    )
+                continue
+            if dependency_type != "required":
+                continue
+            if not isinstance(project_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{1,80}", project_id
+            ):
+                warnings.append("A required dependency has no valid Modrinth project ID.")
+                continue
+            if project_id in installed or project_id in visiting:
+                continue
+
+            selected = fetch_version(dependency, project_id)
+            if selected is None:
+                continue
+            visiting.add(project_id)
+            visit(selected, depth + 1)
+            visiting.remove(project_id)
+            installed.add(project_id)
+            project = _request_json(
+                f"{MODRINTH_API}/project/{urllib.parse.quote(project_id, safe='')}"
+            )
+            title = project.get("title", project_id) if isinstance(project, dict) else project_id
+            resolved.append((project_id, title, selected))
+
+    root_project = version.get("project_id")
+    if isinstance(root_project, str):
+        visiting.add(root_project)
+    visit(version, 0)
+    return resolved, warnings
+
+
+def installed_mod_project_ids(profile: dict) -> set[str]:
+    """Read known project IDs from records and local Fabric jar metadata."""
+    project_ids = set()
+    installed_content = profile.get("installed_content", {})
+    records = (
+        installed_content.get("mods", [])
+        if isinstance(installed_content, dict) else []
+    )
+    if isinstance(records, list):
+        project_ids.update(
+            record["project_id"]
+            for record in records
+            if isinstance(record, dict)
+            and isinstance(record.get("project_id"), str)
+        )
+    mods_dir = profile_instance_dir(profile) / "mods"
+    if not mods_dir.is_dir() or mods_dir.is_symlink():
+        return project_ids
+    for jar_path in mods_dir.iterdir():
+        if (
+            jar_path.is_symlink()
+            or not jar_path.is_file()
+            or not jar_path.name.lower().endswith(".jar")
+            or not jar_path.resolve().is_relative_to(mods_dir.resolve())
+        ):
+            continue
+        try:
+            with zipfile.ZipFile(jar_path) as jar:
+                metadata = json.loads(jar.read("fabric.mod.json"))
+        except (OSError, KeyError, zipfile.BadZipFile, json.JSONDecodeError):
+            continue
+        custom = metadata.get("custom", {}) if isinstance(metadata, dict) else {}
+        modrinth_data = custom.get("modrinth", {}) if isinstance(custom, dict) else {}
+        project_id = modrinth_data.get("project_id") if isinstance(modrinth_data, dict) else None
+        if isinstance(project_id, str):
+            project_ids.add(project_id)
+    return project_ids
+
+
+def install_mod_project_with_dependencies(
+    project_id: str,
+    title: str,
+    version: dict,
+    category: str,
+    destination: Path,
+    profile: dict,
+    cancel_event=None,
+    progress: Callable[[int, int | None], None] | None = None,
+) -> tuple[list[dict], list[str]]:
+    """Install one Modrinth mod and its required compatible dependencies."""
+    if category != "mods":
+        raise ValueError("Dependency installation is supported for mods only.")
+    game_version = profile.get("mc_version")
+    loader = profile.get("type")
+    dependencies, warnings = resolve_required_mod_dependencies(
+        version,
+        game_version,
+        loader,
+        installed_mod_project_ids(profile),
+    )
+    install_queue = [(project_id, title, version), *dependencies]
+    records = []
+    for mod_project_id, mod_title, mod_version in install_queue:
+        installed_path = download_project_file(
+            mod_version,
+            "mods",
+            destination,
+            cancel_event=cancel_event,
+            progress=progress,
+        )
+        records.append({
+            "project_id": mod_project_id,
+            "version_id": mod_version.get("id"),
+            "title": mod_title,
+            "filename": installed_path.name,
+            "version": mod_version.get("version_number", "latest"),
+            "enabled": True,
+        })
+
+    if loader == "fabric":
+        from core.installer import has_fabric_api, install_mods
+
+        if not has_fabric_api(destination):
+            api_records = []
+            install_mods(
+                game_version,
+                [],
+                log=lambda _message: None,
+                progress=lambda _task, _pct: None,
+                mods_dir=destination,
+                profile={"installed_content": {"mods": api_records}},
+            )
+            records.extend(api_records)
+    return records, warnings
+
+
 def _download_stream(
     url: str,
     destination: Path,
@@ -513,9 +703,9 @@ def list_installed_files(profile: dict, category: str, world_name: str | None = 
                 or path.name.lower().endswith(f"{extension}.disabled")
             )
         else:
-            matches = (
-                path.is_file() and path.suffix.lower() == extension
-            ) or path.is_dir()
+            matches = path.is_file() and path.suffix.lower() == extension
+            if category in {"resourcepacks", "datapacks"} and path.is_dir():
+                matches = True
         if matches:
             found.append(path)
     return sorted(found, key=lambda path: path.name.casefold())

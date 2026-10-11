@@ -5,6 +5,8 @@ Builds the JVM classpath and launches Minecraft, with or without Fabric.
 
 import os
 import json
+import re
+import zipfile
 from core.auth import CLIENT_ID
 import subprocess
 import platform
@@ -97,6 +99,192 @@ def _collect_classpath(
     return jars
 
 
+def _parse_minecraft_version(version: str) -> tuple[int, ...] | None:
+    match = re.fullmatch(r"(\d+(?:\.\d+)*)(?:[-+][A-Za-z0-9.-]+)?", version)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def _version_constraint_matches(version: str, constraint: str) -> bool | None:
+    """Evaluate the common Fabric semver constraints used for Minecraft."""
+    version_parts = _parse_minecraft_version(version)
+    if version_parts is None or not isinstance(constraint, str):
+        return None
+
+    def compare(left: tuple[int, ...], right: tuple[int, ...]) -> int:
+        size = max(len(left), len(right))
+        left += (0,) * (size - len(left))
+        right += (0,) * (size - len(right))
+        return (left > right) - (left < right)
+
+    alternatives = constraint.split("||")
+    for alternative in alternatives:
+        terms = [term for term in re.split(r"[\s,]+", alternative.strip()) if term]
+        if not terms:
+            return None
+        accepted = True
+        for term in terms:
+            match = re.fullmatch(r"(>=|<=|>|<|=|\^|~)?(\d+(?:\.\d+)*(?:\.[xX*])?)", term)
+            if not match:
+                return None
+            operator, required_text = match.groups()
+            wildcard = required_text.endswith((".x", ".X", ".*"))
+            if wildcard:
+                prefix = tuple(int(part) for part in required_text.rsplit(".", 1)[0].split("."))
+                if version_parts[:len(prefix)] != prefix:
+                    accepted = False
+                    break
+                continue
+
+            required = tuple(int(part) for part in required_text.split("."))
+            order = compare(version_parts, required)
+            if operator in (None, "=") and order != 0:
+                accepted = False
+            elif operator == ">=" and order < 0:
+                accepted = False
+            elif operator == "<=" and order > 0:
+                accepted = False
+            elif operator == ">" and order <= 0:
+                accepted = False
+            elif operator == "<" and order >= 0:
+                accepted = False
+            elif operator == "^":
+                upper = (required[0] + 1,) if required[0] else (0, required[1] + 1)
+                if order < 0 or compare(version_parts, upper) >= 0:
+                    accepted = False
+            elif operator == "~":
+                upper = required[:-1] + (required[-1] + 1,)
+                if order < 0 or compare(version_parts, upper) >= 0:
+                    accepted = False
+            if not accepted:
+                break
+        if accepted:
+            return True
+    return False
+
+
+def disable_incompatible_mods(
+    mods_dir: Path, mc_version: str, log: Callable[[str], None]
+) -> list[str]:
+    """Disable Fabric mods that explicitly reject the selected Minecraft version."""
+    mods_dir = Path(mods_dir)
+    if not mods_dir.exists():
+        return []
+    if mods_dir.is_symlink() or not mods_dir.is_dir():
+        raise ValueError("The profile mods path must be a regular directory.")
+
+    disabled = []
+    for jar_path in sorted(mods_dir.iterdir(), key=lambda path: path.name.casefold()):
+        if not jar_path.name.lower().endswith(".jar"):
+            continue
+        if jar_path.is_symlink() or not jar_path.is_file():
+            log(f"⚠ Skipping unsafe or non-file mod entry: {jar_path.name}")
+            continue
+        if not jar_path.resolve().is_relative_to(mods_dir.resolve()):
+            log(f"⚠ Skipping mod outside the profile mods folder: {jar_path.name}")
+            continue
+        try:
+            with zipfile.ZipFile(jar_path) as jar:
+                metadata = json.loads(jar.read("fabric.mod.json"))
+        except (OSError, KeyError, zipfile.BadZipFile, json.JSONDecodeError):
+            continue
+
+        dependencies = metadata.get("depends", {}) if isinstance(metadata, dict) else {}
+        minecraft_dependency = dependencies.get("minecraft") if isinstance(dependencies, dict) else None
+        constraints = minecraft_dependency if isinstance(minecraft_dependency, list) else [minecraft_dependency]
+        results = [
+            _version_constraint_matches(mc_version, constraint)
+            for constraint in constraints
+            if isinstance(constraint, str)
+        ]
+        if not results or any(result is None for result in results) or any(results):
+            continue
+
+        disabled_path = jar_path.with_name(f"{jar_path.name}.disabled")
+        if disabled_path.exists():
+            log(
+                f"⚠ {jar_path.name} does not support Minecraft {mc_version}, "
+                f"but {disabled_path.name} already exists; left the original unchanged."
+            )
+            continue
+        jar_path.rename(disabled_path)
+        disabled.append(jar_path.name)
+        log(
+            f"⚠ Disabled {jar_path.name}: its fabric.mod.json Minecraft dependency "
+            f"{minecraft_dependency!r} does not match {mc_version}."
+        )
+    return disabled
+
+
+def build_jvm_args(
+    java_version: int,
+    ram_gb: int,
+    performance_boost: bool = True,
+    user_args: list[str] | None = None,
+    fabric_args: list[str] | None = None,
+) -> list[str]:
+    """Build supported memory and performance arguments for the selected Java."""
+    if java_version not in {8, 17, 21, 25}:
+        raise ValueError(f"Unsupported Java version: {java_version}")
+    max_ram = max(1, int(ram_gb))
+    min_ram = min(max(1, max_ram // 2), max_ram)
+    max_arg = f"-Xmx{max_ram}G"
+    min_arg = f"-Xms{min_ram}G"
+    max_bytes = max_ram * 1024**3
+    min_bytes = min_ram * 1024**3
+    if performance_boost:
+        performance_args = [
+            "-XX:+UseG1GC",
+            "-XX:+ParallelRefProcEnabled",
+            "-XX:MaxGCPauseMillis=200",
+        ]
+    else:
+        performance_args = []
+
+    obsolete_flags = {
+        "-XX:+UseConcMarkSweepGC",
+        "-XX:+UseParNewGC",
+        "-XX:+CMSIncrementalMode",
+        "-XX:+CMSClassUnloadingEnabled",
+        "-XX:+CMSParallelRemarkEnabled",
+        "-XX:+UseCMSCompactAtFullCollection",
+        "-XX:+UseBiasedLocking",
+        "-XX:+UseFastAccessorMethods",
+    }
+    remaining_args = []
+    for source in (user_args or [], fabric_args or []):
+        for arg in source:
+            if arg in obsolete_flags or arg.startswith(
+                ("-XX:InitialHeapSize=", "-XX:MaxHeapSize=")
+            ):
+                continue
+            match = re.fullmatch(r"-Xm([sx])(\d+)([kKmMgGtT]?)", arg)
+            if match:
+                kind, amount_text, unit = match.groups()
+                multiplier = {
+                    "": 1,
+                    "k": 1024,
+                    "m": 1024**2,
+                    "g": 1024**3,
+                    "t": 1024**4,
+                }[unit.lower()]
+                amount = int(amount_text) * multiplier
+                if kind == "x":
+                    max_arg = arg
+                    max_bytes = amount
+                else:
+                    min_arg = arg
+                    min_bytes = amount
+                continue
+            if arg.startswith(("-Xms", "-Xmx")):
+                raise ValueError(f"Invalid JVM memory argument: {arg}")
+            remaining_args.append(arg)
+    if min_bytes > max_bytes:
+        min_arg = max_arg.replace("-Xmx", "-Xms", 1)
+    return [max_arg, min_arg, *performance_args, *remaining_args]
+
+
 def launch(
     mc_version: str,
     profile_type: str,  # "vanilla" or "fabric"
@@ -127,6 +315,7 @@ def launch(
     game_dir.mkdir(parents=True, exist_ok=True)
 
     java = _find_java(mc_version)
+    java_version = get_required_java_version(mc_version)
     sep = ";" if platform.system() == "Windows" else ":"
 
     # Load vanilla version JSON
@@ -221,17 +410,19 @@ def launch(
     natives_path = base / "versions" / mc_version / "natives"
 
     extra_mac = ["-XstartOnFirstThread"] if platform.system() == "Darwin" else []
-
+    jvm_args = build_jvm_args(
+        java_version,
+        ram_gb,
+        performance_boost,
+        user_java_args,
+        extra_jvm,
+    )
     cmd = [
         java,
         *extra_mac,
-        f"-Xmx{ram_gb}G",
-        f"-Xms{max(1, ram_gb // 2)}G",
-        *(["-XX:+UseG1GC", "-XX:+ParallelRefProcEnabled", "-XX:MaxGCPauseMillis=200"] if performance_boost else []),
+        *jvm_args,
         f"-Djava.library.path={natives_path}",
         f"-Djna.tmpdir={natives_path}",
-        *user_java_args,
-        *extra_jvm,
         "-cp",
         classpath,
         main_class,
@@ -257,11 +448,14 @@ def launch(
             _set_windows_gpu_preference(java, log)
             log("🎮 Running with Discrete GPU enabled (Windows)")
 
+    log_dir = game_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    game_log = log_dir / "launcher-game.log"
+    log(f"   Game output: {game_log}")
     popen_kwargs = dict(
         cwd=str(game_dir),
-        stdout=subprocess.PIPE,
+        stdout=None,
         stderr=subprocess.STDOUT,
-        text=True,
         env=env,
     )
 
@@ -269,4 +463,6 @@ def launch(
         CREATE_NO_WINDOW = 0x08000000
         popen_kwargs["creationflags"] = CREATE_NO_WINDOW
 
-    return subprocess.Popen(cmd, **popen_kwargs)
+    with game_log.open("w", encoding="utf-8", errors="replace") as output:
+        popen_kwargs["stdout"] = output
+        return subprocess.Popen(cmd, **popen_kwargs)

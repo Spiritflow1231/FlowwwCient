@@ -129,6 +129,45 @@ def fetch_fabric_versions() -> list[str]:
     return [v["version"] for v in versions if v.get("stable")]
 
 
+def fetch_latest_stable_fabric_loader(mc_version: str | None = None) -> str:
+    """Return the newest stable Fabric loader, constrained to MC if requested."""
+    global_loaders = _get(f"{FABRIC_META}/versions/loader")
+    latest_global = next(
+        (
+            entry["version"]
+            for entry in global_loaders
+            if isinstance(entry, dict)
+            and entry.get("stable") is True
+            and isinstance(entry.get("version"), str)
+        ),
+        None,
+    )
+    if not latest_global:
+        raise RuntimeError("Fabric returned no stable loader versions.")
+    if mc_version is None:
+        return latest_global
+
+    compatible = _get(f"{FABRIC_META}/versions/loader/{mc_version}")
+    for entry in compatible:
+        loader = entry.get("loader", {}) if isinstance(entry, dict) else {}
+        if loader.get("version") == latest_global and loader.get("stable") is True:
+            return latest_global
+    fallback = next(
+        (
+            entry["loader"]["version"]
+            for entry in compatible
+            if isinstance(entry, dict)
+            and isinstance(entry.get("loader"), dict)
+            and entry["loader"].get("stable") is True
+            and isinstance(entry["loader"].get("version"), str)
+        ),
+        None,
+    )
+    if not fallback:
+        raise RuntimeError(f"No stable Fabric loader found for Minecraft {mc_version}.")
+    return fallback
+
+
 # ── Install routines ──────────────────────────────────────────────────────────
 
 
@@ -168,6 +207,31 @@ def _extract_natives(version_json: dict, base: Path, mc_version: str, log: Calla
         except Exception as e:
             log(f"⚠  Failed extracting {jar_path.name}: {e}")
     log(f"✅ Natives extracted ({extracted} libraries).")
+
+
+def has_fabric_api(mods_dir: Path) -> bool:
+    """Return whether an enabled Fabric API jar is present in a profile."""
+    import zipfile
+
+    mods_dir = Path(mods_dir)
+    if not mods_dir.is_dir() or mods_dir.is_symlink():
+        return False
+    for jar_path in mods_dir.iterdir():
+        if (
+            jar_path.is_symlink()
+            or not jar_path.is_file()
+            or not jar_path.name.lower().endswith(".jar")
+            or not jar_path.resolve().is_relative_to(mods_dir.resolve())
+        ):
+            continue
+        try:
+            with zipfile.ZipFile(jar_path) as jar:
+                metadata = json.loads(jar.read("fabric.mod.json"))
+        except (OSError, KeyError, zipfile.BadZipFile, json.JSONDecodeError):
+            continue
+        if isinstance(metadata, dict) and metadata.get("id") == "fabric-api":
+            return True
+    return False
 
 
 def install_minecraft(mc_version: str, log: Callable, progress: Callable) -> dict:
@@ -309,21 +373,21 @@ def install_fabric(
         raise RuntimeError(
             f"Fabric loader {loader_version} is not available for Minecraft {mc_version}."
         )
-    loader_ver = loader_version or available_loaders[0]
+    if loader_version:
+        loader_ver = loader_version
+    else:
+        latest_stable = fetch_latest_stable_fabric_loader(mc_version)
+        loader_ver = latest_stable
     profile_id = f"fabric-loader-{loader_ver}-{mc_version}"
 
     profile_dir = base / "versions" / profile_id
     profile_dir.mkdir(parents=True, exist_ok=True)
     profile_json_path = profile_dir / f"{profile_id}.json"
 
-    if not profile_json_path.exists():
-        log(f"⬇  Downloading Fabric profile ({loader_ver})…")
-        url = f"{FABRIC_META}/versions/loader/{mc_version}/{loader_ver}/profile/json"
-        profile = _get(url)
-        profile_json_path.write_text(json.dumps(profile, indent=2))
-    else:
-        log("✅ Fabric profile already present.")
-        profile = json.loads(profile_json_path.read_text())
+    log(f"⬇  Downloading Fabric profile ({loader_ver})…")
+    url = f"{FABRIC_META}/versions/loader/{mc_version}/{loader_ver}/profile/json"
+    profile = _get(url)
+    profile_json_path.write_text(json.dumps(profile, indent=2))
 
     log("📚 Downloading Fabric libraries…")
     libs_dir = base / "libraries"
@@ -362,6 +426,7 @@ def _install_single_mod(
     mods_dir: Path,
     log: Callable,
     pinned_version_id: Optional[str] = None,
+    records: list[dict] | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """Download all files for one mod.
 
@@ -407,12 +472,24 @@ def _install_single_mod(
             log(f"⬇  Downloading {file_info['filename']} ({ver['version_number']})…")
             _download(file_info["url"], dest)
         installed.append(file_info["filename"])
+        if records is not None:
+            records.append({
+                "project_id": project_id,
+                "version_id": ver.get("id"),
+                "filename": file_info["filename"],
+                "title": (
+                    AVAILABLE_MODS.get(name, {}).get("label")
+                    if name in AVAILABLE_MODS else "Fabric API"
+                ),
+                "version": ver.get("version_number", "Installed"),
+            })
     return installed, pinned_deps
 
 
 def install_mods(
     mc_version: str, enabled_mods: list[str], log: Callable, progress: Callable,
     mods_dir: Optional[Path] = None,
+    profile: dict | None = None,
 ) -> list[str]:
     """Download Fabric API + enabled mods from Modrinth.
 
@@ -429,16 +506,19 @@ def install_mods(
     # Populated as each mod is installed; consulted before fetching the next.
     version_pins: dict[str, str] = {}
     installed: list[str] = []
+    records: list[dict] = []
 
     log("🔍 Resolving fabric-api…")
     try:
         files, deps = _install_single_mod(
-            "fabric-api", FABRIC_API_ID, mc_version, mods_dir, log
+            "fabric-api", FABRIC_API_ID, mc_version, mods_dir, log,
+            records=records,
         )
         installed += files
         version_pins.update(deps)
     except Exception as e:
         log(f"❌ Failed to install fabric-api: {e}")
+        raise RuntimeError(f"Could not install Fabric API for Minecraft {mc_version}: {e}") from e
 
     # Iterate in AVAILABLE_MODS insertion order (dependency-declaring mods first)
     # but only install mods the user actually enabled.
@@ -456,6 +536,7 @@ def install_mods(
             files, deps = _install_single_mod(
                 mod_key, mod["id"], mc_version, mods_dir, log,
                 pinned_version_id=pin,
+                records=records,
             )
             installed += files
             # Propagate any new pins this mod declares for mods not yet installed.
@@ -465,6 +546,26 @@ def install_mods(
         except Exception as e:
             log(f"❌ Failed to install {mod['label']}: {e}")
         progress("mods", int((i + 1) / max(total, 1) * 100))
+
+    if profile is not None:
+        installed_content = profile.setdefault("installed_content", {})
+        if not isinstance(installed_content, dict):
+            raise ValueError("The profile installed-content records are invalid.")
+        mod_records = installed_content.setdefault("mods", [])
+        if not isinstance(mod_records, list):
+            raise ValueError("The profile mod records are invalid.")
+        by_filename = {
+            record.get("filename"): record
+            for record in mod_records
+            if isinstance(record, dict) and isinstance(record.get("filename"), str)
+        }
+        for record in records:
+            existing = by_filename.get(record["filename"])
+            if existing is None:
+                mod_records.append(record)
+                by_filename[record["filename"]] = record
+            else:
+                existing.update(record)
 
     log(f"✅ Mods installed: {', '.join(installed)}")
     return installed

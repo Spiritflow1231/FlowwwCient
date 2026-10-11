@@ -41,9 +41,10 @@ from core.installer import (
     install_minecraft,
     install_fabric,
     install_mods,
+    has_fabric_api,
     AVAILABLE_MODS,
 )
-from core.launcher import launch
+from core.launcher import disable_incompatible_mods, launch
 from core.java_manager import get_required_java_version
 
 # ── Appearance ────────────────────────────────────────────────────────────────
@@ -140,6 +141,79 @@ def _section_label(master, text: str) -> ctk.CTkLabel:
     )
 
 
+def _default_steve_skin() -> Image.Image:
+    """Create the standard Steve-color texture as a local preview fallback."""
+    from PIL import ImageDraw
+
+    skin = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    skin.paste((198, 145, 105, 255), (8, 8, 16, 16))
+    ImageDraw.Draw(skin).rectangle((9, 11, 10, 12), fill=(37, 71, 151, 255))
+    ImageDraw.Draw(skin).rectangle((13, 11, 14, 12), fill=(37, 71, 151, 255))
+    ImageDraw.Draw(skin).rectangle((11, 13, 12, 14), fill=(151, 92, 65, 255))
+    ImageDraw.Draw(skin).rectangle((11, 15, 13, 15), fill=(96, 52, 42, 255))
+    ImageDraw.Draw(skin).rectangle((40, 8, 47, 9), fill=(76, 49, 33, 255))
+    ImageDraw.Draw(skin).rectangle((40, 10, 41, 13), fill=(76, 49, 33, 255))
+    ImageDraw.Draw(skin).rectangle((46, 10, 47, 13), fill=(76, 49, 33, 255))
+    skin.paste((76, 49, 33, 255), (42, 8, 46, 9))
+    skin.paste((57, 174, 168, 255), (20, 20, 28, 32))
+    skin.paste((57, 174, 168, 255), (20, 36, 28, 48))
+    skin.paste((198, 145, 105, 255), (44, 20, 48, 32))
+    skin.paste((198, 145, 105, 255), (44, 36, 48, 48))
+    skin.paste((198, 145, 105, 255), (36, 52, 40, 64))
+    skin.paste((54, 91, 171, 255), (4, 20, 8, 32))
+    skin.paste((54, 91, 171, 255), (20, 52, 24, 64))
+    return skin
+
+
+def _render_skin_preview(skin: Image.Image) -> Image.Image:
+    """Compose front-facing skin texture regions into a pixel-art bust."""
+    source = skin.convert("RGBA")
+    factor = source.width // 64
+    if factor < 1 or source.width % 64 or source.height not in (32 * factor, 64 * factor):
+        raise ValueError("Expected a standard 64×64 or 64×32 Minecraft skin texture.")
+
+    def crop(box):
+        return source.crop(tuple(value * factor for value in box))
+
+    def scale(image, size):
+        return image.resize(size, Image.Resampling.NEAREST)
+
+    canvas = Image.new("RGBA", (116, 174), (0, 0, 0, 0))
+    head = crop((8, 8, 16, 16))
+    if source.height >= 64 * factor:
+        head = Image.alpha_composite(head, crop((40, 8, 48, 16)))
+    canvas.alpha_composite(scale(head, (48, 48)), (34, 2))
+
+    body = crop((20, 20, 28, 32))
+    arm_right = crop((44, 20, 48, 32))
+    leg_right = crop((4, 20, 8, 32))
+    if source.height >= 64 * factor:
+        body = Image.alpha_composite(body, crop((20, 36, 28, 48)))
+        arm_right = Image.alpha_composite(arm_right, crop((44, 36, 48, 48)))
+        leg_right = Image.alpha_composite(leg_right, crop((4, 36, 8, 48)))
+        arm_left = crop((36, 52, 40, 64))
+        leg_left = crop((20, 52, 24, 64))
+    else:
+        arm_left = arm_right.copy()
+        leg_left = leg_right.copy()
+    canvas.alpha_composite(scale(arm_left, (16, 52)), (19, 53))
+    canvas.alpha_composite(scale(arm_right, (16, 52)), (81, 53))
+    canvas.alpha_composite(scale(body, (46, 58)), (35, 51))
+    canvas.alpha_composite(scale(leg_left, (21, 50)), (37, 107))
+    canvas.alpha_composite(scale(leg_right, (21, 50)), (58, 107))
+
+    from PIL import ImageDraw
+
+    shading = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(shading)
+    for left, top, right, bottom in (
+        (78, 54, 81, 104), (80, 4, 82, 49), (77, 109, 79, 157),
+    ):
+        draw.rectangle((left, top, right, bottom), fill=(0, 0, 0, 45))
+    canvas.alpha_composite(shading)
+    return canvas
+
+
 class ProfileEditorWindow(ctk.CTkToplevel):
     """Profile-specific content manager for FlowwwClient."""
 
@@ -180,6 +254,9 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self._build_ui()
 
     def _build_ui(self):
+        loader_version = self.profile.get("fabric_loader_version") or getattr(
+            self.parent, "latest_fabric_loader_versions", {}
+        ).get(self.profile.get("mc_version"))
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=22, pady=(18, 12))
 
@@ -193,7 +270,11 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         ctk.CTkLabel(
             header,
             text=f"Minecraft {self.profile.get('mc_version', '?')}  ·  "
-                 f"{self.profile.get('type', 'vanilla').title()}",
+                 f"{self.profile.get('type', 'vanilla').title()}"
+                 + (
+                     f"  ·  Fabric {loader_version}"
+                     if self.profile.get("type") == "fabric" and loader_version else ""
+                 ),
             text_color=self.theme["TEXT_MUTED"],
             font=ctk.CTkFont(size=12),
         ).pack(side="right")
@@ -261,7 +342,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
 
         self.heading = ctk.CTkLabel(
             self.content,
-            text="Mods",
+            text=dict(self.CATEGORIES)[self.category],
             text_color=self.theme["TEXT_FG"],
             font=ctk.CTkFont(size=20, weight="bold"),
         )
@@ -272,7 +353,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         search_row.grid_columnconfigure(0, weight=1)
         self.search = ctk.CTkEntry(
             search_row,
-            placeholder_text="Search Modrinth projects...",
+            placeholder_text=f"Search {self.category}…",
             height=38,
             border_color=self.theme["BORDER_COL"],
             fg_color=self.theme["BG_PRIMARY"],
@@ -405,6 +486,15 @@ class ProfileEditorWindow(ctk.CTkToplevel):
             command=self._cancel_install,
         )
         self.cancel_btn.grid(row=0, column=4, padx=(8, 0))
+        self.install_progress = ctk.CTkProgressBar(
+            footer,
+            height=4,
+            progress_color=self.theme["ACCENT"],
+            fg_color=self.theme["BG_PRIMARY"],
+        )
+        self.install_progress.grid(row=1, column=0, columnspan=5, sticky="ew", pady=(6, 0))
+        self.install_progress.set(0)
+        self.install_progress.grid_remove()
 
         self._refresh_content()
 
@@ -416,14 +506,18 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self.parent._show_page("profiles")
 
     def _select_category(self, category):
+        if category not in dict(self.CATEGORIES):
+            return
         self.category = category
         self.page_offset = 0
 
         for key, button in self.category_buttons.items():
             active = key == category
+            self.parent._animate_widget_color(
+                button, self.theme["ACCENT"] if active else "transparent"
+            )
             button.configure(
-                fg_color=self.theme["ACCENT"] if active else "transparent",
-                text_color=self.theme["BG_PRIMARY"] if active else self.theme["TEXT_FG"],
+                text_color=self.theme["BG_PRIMARY"] if active else self.theme["TEXT_FG"]
             )
 
         self._refresh_content()
@@ -461,6 +555,18 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self._request_serial += 1
         labels = dict(self.CATEGORIES)
         self.heading.configure(text=labels[self.category])
+        if self.category != "overview":
+            category_names = {
+                "mods": "mods",
+                "resourcepacks": "resource packs",
+                "shaderpacks": "shaders",
+                "datapacks": "datapacks",
+                "modpacks": "modpacks",
+            }
+            search_action = "Filter installed" if self.tab == "Installed" else "Search"
+            self.search.configure(
+                placeholder_text=f"{search_action} {category_names[self.category]}…"
+            )
         if self.category == "overview":
             self.search_row.grid_remove()
             self.world_frame.grid_remove()
@@ -488,10 +594,17 @@ class ProfileEditorWindow(ctk.CTkToplevel):
     def _show_profile_overview(self):
         self._clear_results()
         profile = self.profile
+        loader_version = profile.get("fabric_loader_version") or getattr(
+            self.parent, "latest_fabric_loader_versions", {}
+        ).get(profile.get("mc_version"))
         ctk.CTkLabel(
             self.results,
             text=f"Minecraft {profile.get('mc_version', '?')}  ·  "
-                 f"{profile.get('type', 'vanilla').title()}",
+                 f"{profile.get('type', 'vanilla').title()}"
+                 + (
+                     f"  ·  Fabric loader {loader_version}"
+                     if profile.get("type") == "fabric" and loader_version else ""
+                 ),
             text_color=self.theme["TEXT_MUTED"],
         ).pack(anchor="w", padx=12, pady=(12, 8))
         ctk.CTkLabel(
@@ -872,6 +985,18 @@ class ProfileEditorWindow(ctk.CTkToplevel):
                 justify="left",
                 wraplength=640,
             ).grid(row=1, column=0, sticky="ew", padx=13, pady=(0, 10))
+        card.bind(
+            "<Enter>",
+            lambda _event, widget=card:
+            self.parent._animate_widget_color(widget, self.theme["BG_PRIMARY"]),
+            add="+",
+        )
+        card.bind(
+            "<Leave>",
+            lambda _event, widget=card:
+            self.parent._animate_widget_color(widget, self.theme["BG_SECONDARY"]),
+            add="+",
+        )
         return card
 
     def _render_installed_file(self, path: Path):
@@ -883,10 +1008,20 @@ class ProfileEditorWindow(ctk.CTkToplevel):
             else:
                 enabled_path = path
                 disabled_path = path.with_name(f"{path.name}{disabled_suffix}")
+            title = enabled_path.stem
+            version = "Installed"
+            try:
+                with zipfile.ZipFile(path) as jar:
+                    metadata = json.loads(jar.read("fabric.mod.json"))
+                if isinstance(metadata, dict):
+                    title = metadata.get("name") or title
+                    version = metadata.get("version") or version
+            except (OSError, KeyError, zipfile.BadZipFile, json.JSONDecodeError):
+                pass
             record = {
                 "filename": enabled_path.name,
-                "title": enabled_path.stem,
-                "version": "Installed",
+                "title": title,
+                "version": version,
             }
             self._render_installed_record(record, enabled_path, disabled_path)
             return
@@ -1109,6 +1244,8 @@ class ProfileEditorWindow(ctk.CTkToplevel):
                 and p["source_modpack"].get("project_id") == project_id
                 for p in self.parent.cfg.get("profiles", [])
             )
+        if self.category == "mods":
+            return project_id in modrinth.installed_mod_project_ids(self.profile)
         installed_content = self.profile.get("installed_content", {})
         records = installed_content.get(self.category, []) if isinstance(installed_content, dict) else []
         return any(
@@ -1267,6 +1404,21 @@ class ProfileEditorWindow(ctk.CTkToplevel):
                 if category == "modpacks":
                     profile = self._import_modpack(project, versions[0], cancel_event, progress)
                     self._post(lambda p=profile: self._finish_modpack_install(p))
+                elif category == "mods":
+                    records, warnings = modrinth.install_mod_project_with_dependencies(
+                        project_id,
+                        title,
+                        versions[0],
+                        category,
+                        destination,
+                        self.profile,
+                        cancel_event=cancel_event,
+                        progress=progress,
+                    )
+                    self._post(
+                        lambda rs=records, ws=warnings, w=world:
+                        self._finish_file_install(rs[0], w, rs[1:], ws)
+                    )
                 else:
                     installed = modrinth.download_project_file(
                         versions[0], category, destination,
@@ -1326,28 +1478,46 @@ class ProfileEditorWindow(ctk.CTkToplevel):
             imported_profile["fabric_loader_version"] = manifest["fabric_loader_version"]
         return imported_profile
 
-    def _finish_file_install(self, record: dict, world: str | None):
+    def _finish_file_install(
+        self,
+        record: dict,
+        world: str | None,
+        additional_records: list[dict] | None = None,
+        warnings: list[str] | None = None,
+    ):
+        all_records = [record, *(additional_records or [])]
         if world:
-            record["world"] = world
+            for item in all_records:
+                item["world"] = world
         records = self.profile.setdefault("installed_content", {}).setdefault(self.category, [])
-        records.append(record)
+        records.extend(all_records)
         try:
             config.save(self.parent.cfg)
             profile_store.save_manifest(self.profile)
         except OSError as exc:
-            records.remove(record)
+            for item in all_records:
+                records.remove(item)
             cleanup_message = ""
-            try:
-                target = self._category_directory() / record["filename"]
-                if target.is_file() and target.resolve().is_relative_to(self._instance_dir().resolve()):
-                    target.unlink()
-            except (OSError, ValueError, RuntimeError) as cleanup_error:
-                cleanup_message = f" The downloaded file could not be removed: {cleanup_error}"
+            cleanup_errors = []
+            for item in all_records:
+                try:
+                    target = self._category_directory() / item["filename"]
+                    if target.is_file() and target.resolve().is_relative_to(self._instance_dir().resolve()):
+                        target.unlink()
+                except (OSError, ValueError, RuntimeError) as cleanup_error:
+                    cleanup_errors.append(str(cleanup_error))
+            if cleanup_errors:
+                cleanup_message = f" Could not remove downloaded files: {'; '.join(cleanup_errors)}"
             self._finish_install_error(
                 f"Downloaded, but could not save profile settings: {exc}.{cleanup_message}"
             )
             return
-        self._finish_install(f"Installed {record['title']} ({record['filename']}).")
+        names = [record.get("title", record["filename"])]
+        names.extend(item.get("title", item["filename"]) for item in all_records[1:])
+        summary = f"Installed {' + '.join(names)}"
+        if warnings:
+            summary += f". Warnings: {'; '.join(warnings)}"
+        self._finish_install(summary + ".")
 
     def _finish_modpack_install(self, profile: dict):
         try:
@@ -1425,6 +1595,13 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self.world_menu.configure(state=state)
         for button in self.category_buttons.values():
             button.configure(state=state)
+        if busy:
+            self.install_progress.grid()
+            self.install_progress.start()
+        else:
+            self.install_progress.stop()
+            self.install_progress.set(0)
+            self.install_progress.grid_remove()
 
     def _set_status(self, message: str):
         if self.winfo_exists():
@@ -2402,6 +2579,8 @@ class AccountsWindow(ctk.CTkToplevel):
             dimensions = validate_cosmetic_image(source, cosmetic)
             destination = skin_store.store_cosmetic(account["uuid"], source, cosmetic)
             self._refresh_cosmetics()
+            if cosmetic == "skin":
+                self.parent._refresh_home_skin()
             messagebox.showinfo(
                 f"{cosmetic.title()} saved",
                 f"Saved local {cosmetic} ({dimensions[0]} × {dimensions[1]}) for {username}. "
@@ -2432,6 +2611,8 @@ class AccountsWindow(ctk.CTkToplevel):
                 messagebox.showerror("Could not remove cosmetic", str(exc), parent=self)
                 return
         self._refresh_cosmetics()
+        if cosmetic == "skin":
+            self.parent._refresh_home_skin()
 
     def _save_skin_model(self, model: str):
         username = self.parent.username_var.get().strip()
@@ -2501,7 +2682,9 @@ class MainWindow(ctk.CTk):
         self.theme            = get_theme(self.cfg.get("theme", "overworld"))
         self.all_versions: list[str]    = []
         self.fabric_versions: list[str] = []
+        self.latest_fabric_loader_versions: dict[str, str] = {}
         self._busy            = False
+        self._color_animations = {}
         self._selected_profile_idx: int = -1
         self._ms_account: dict | None = None
         self._username_trace_id = None
@@ -2560,6 +2743,22 @@ class MainWindow(ctk.CTk):
                 command=command,
             )
             button.pack(fill="x", padx=9, pady=3)
+            button.bind(
+                "<Enter>",
+                lambda _event, w=button, k=key: self._animate_widget_color(
+                    w,
+                    self.theme["ACCENT"] if self._current_page == k else self.theme["BG_SECONDARY"],
+                ),
+                add="+",
+            )
+            button.bind(
+                "<Leave>",
+                lambda _event, w=button, k=key: self._animate_widget_color(
+                    w,
+                    self.theme["ACCENT"] if self._current_page == k else "transparent",
+                ),
+                add="+",
+            )
             self.nav_buttons[key] = button
         ctk.CTkFrame(navigation, height=1, fg_color=BORDER_COL).pack(
             fill="x", padx=14, pady=(14, 10)
@@ -2678,14 +2877,73 @@ class MainWindow(ctk.CTk):
         for frame in self._pages.values():
             frame.grid_forget()
         self._pages[page].grid(row=0, column=0, sticky="nsew")
+        self._pages[page].grid_configure(padx=(6, 0))
+        for step in range(1, 7):
+            self.after(
+                step * 20,
+                lambda current=step, widget=self._pages[page]:
+                widget.grid_configure(padx=(max(0, 6 - current), 0))
+                if widget.winfo_exists() and not self._busy else None,
+            )
         self._current_page = page
         self._set_active_navigation(page)
+
+    def _animate_widget_color(self, widget, target: str, duration_ms: int = 120):
+        if self._busy:
+            return
+        try:
+            current = widget.cget("fg_color")
+            if isinstance(current, (tuple, list)):
+                current = current[-1]
+            end_color = target
+            start_color = self.theme["BG_SECONDARY"] if current == "transparent" else current
+            finish_color = self.theme["BG_SECONDARY"] if target == "transparent" else target
+            if not (
+                isinstance(start_color, str) and start_color.startswith("#")
+                and isinstance(finish_color, str) and finish_color.startswith("#")
+            ):
+                widget.configure(fg_color=target)
+                return
+            if len(start_color) == 4:
+                start_color = "#" + "".join(char * 2 for char in start_color[1:])
+            if len(finish_color) == 4:
+                finish_color = "#" + "".join(char * 2 for char in finish_color[1:])
+            start = tuple(int(start_color[index:index + 2], 16) for index in (1, 3, 5))
+            finish = tuple(int(finish_color[index:index + 2], 16) for index in (1, 3, 5))
+            previous = self._color_animations.pop(widget, None)
+            if previous:
+                self.after_cancel(previous)
+
+            steps = max(1, duration_ms // 20)
+
+            def animate(step=1):
+                if not widget.winfo_exists() or self._busy:
+                    self._color_animations.pop(widget, None)
+                    return
+                fraction = min(step / steps, 1)
+                color = "#" + "".join(
+                    f"{round(a + (b - a) * fraction):02x}"
+                    for a, b in zip(start, finish)
+                )
+                widget.configure(
+                    fg_color=target if step >= steps and target == "transparent" else color
+                )
+                if step < steps:
+                    self._color_animations[widget] = self.after(20, lambda: animate(step + 1))
+                else:
+                    self._color_animations.pop(widget, None)
+
+            animate()
+        except (TclError, ValueError):
+            return
 
     def _set_active_navigation(self, page):
         for key, button in self.nav_buttons.items():
             active = key == page
+            self._animate_widget_color(
+                button, self.theme["ACCENT"] if active else "transparent"
+            )
             button.configure(
-                fg_color=self.theme["ACCENT"] if active else "transparent",
                 hover_color=self.theme["ACCENT_DARK"] if active else self.theme["BG_PRIMARY"],
                 text_color=self.theme["BG_PRIMARY"] if active else self.theme["TEXT_FG"],
             )
@@ -2908,6 +3166,7 @@ class MainWindow(ctk.CTk):
             fg_color=GREEN, text_color=BG_PRIMARY, hover_color=GREEN_DARK,
             command=self._on_new_profile,
         ).grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 18))
+        self._bind_card_motion(profiles_card)
 
         actions = ctk.CTkFrame(
             self.home_panel, fg_color=BG_SECONDARY, corner_radius=14,
@@ -2915,23 +3174,65 @@ class MainWindow(ctk.CTk):
         )
         actions.grid(row=1, column=1, sticky="nsew", padx=(6, 0))
         actions.grid_columnconfigure(0, weight=1)
+        self._bind_card_motion(actions)
+        ctk.CTkLabel(
+            actions, text="Play", text_color=TEXT_FG,
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=18, pady=(18, 8))
+        self.home_skin_label = ctk.CTkLabel(
+            actions,
+            text="",
+            width=116,
+            height=174,
+            fg_color=BG_PRIMARY,
+            corner_radius=10,
+        )
+        self.home_skin_label.grid(row=1, column=0, padx=18, pady=(0, 10))
         ctk.CTkLabel(
             actions, text="Quick access", text_color=TEXT_FG,
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(18, 12))
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=2, column=0, sticky="w", padx=18, pady=(2, 8))
         action_items = (
             ("Edit profile", self._on_edit_profile),
             ("Browse mods", lambda: self._open_profile_content("mods")),
             ("Settings", self._open_settings_page),
         )
-        for row, (title, command) in enumerate(action_items, start=1):
-            ctk.CTkButton(
+        for row, (title, command) in enumerate(action_items, start=3):
+            button = ctk.CTkButton(
                 actions, text=title, anchor="w",
                 height=42, corner_radius=10, fg_color=BG_CARD,
                 hover_color=BG_PRIMARY, text_color=TEXT_FG,
                 font=ctk.CTkFont(size=12, weight="bold"), command=command,
-            ).grid(row=row, column=0, sticky="ew", padx=14, pady=4)
+            )
+            button.grid(row=row, column=0, sticky="ew", padx=14, pady=4)
+            button.bind(
+                "<Enter>",
+                lambda _event, widget=button:
+                self._animate_widget_color(widget, BG_PRIMARY),
+                add="+",
+            )
+            button.bind(
+                "<Leave>",
+                lambda _event, widget=button:
+                self._animate_widget_color(widget, BG_CARD),
+                add="+",
+            )
+        self._refresh_home_skin()
         self._update_home_profile(self._current_profile())
+
+    def _bind_card_motion(self, card):
+        card.bind(
+            "<Enter>",
+            lambda _event, widget=card:
+            self._animate_widget_color(widget, self.theme["BG_PRIMARY"]),
+            add="+",
+        )
+        card.bind(
+            "<Leave>",
+            lambda _event, widget=card:
+            self._animate_widget_color(widget, self.theme["BG_SECONDARY"]),
+            add="+",
+        )
         self._refresh_profile_list()
     # ── Version loading ────────────────────────────────────────────────────────
 
@@ -2952,11 +3253,70 @@ class MainWindow(ctk.CTk):
             except Exception as e:
                 self.after(0, lambda error=e: self._log(f"❌ Could not fetch Fabric versions: {error}"))
 
+            try:
+                from core.installer import fetch_latest_stable_fabric_loader
+
+                profiles = [
+                    profile for profile in self.cfg.get("profiles", [])
+                    if isinstance(profile, dict) and profile.get("type") == "fabric"
+                ]
+                minecraft_versions = {
+                    profile["mc_version"]
+                    for profile in profiles
+                    if isinstance(profile.get("mc_version"), str)
+                }
+                if self.fabric_versions:
+                    minecraft_versions.add(self.fabric_versions[0])
+                self.latest_fabric_loader_versions = {
+                    version: fetch_latest_stable_fabric_loader(version)
+                    for version in minecraft_versions
+                }
+                if profiles:
+                    self.after(0, self._upgrade_fabric_profiles)
+            except Exception as e:
+                self.after(
+                    0,
+                    lambda error=e: self._log(
+                        f"❌ Could not fetch stable Fabric loader versions: {error}"
+                    ),
+                )
+
             self.after(0, self._maybe_create_default_profiles)
             self.after(0, self._auto_update_latest_profiles)
             self.after(0, self._refresh_buttons)
 
         threading.Thread(target=_task, daemon=True).start()
+
+    def _upgrade_fabric_profiles(self):
+        changed = False
+        for profile in self.cfg.get("profiles", []):
+            if not isinstance(profile, dict) or profile.get("type") != "fabric":
+                continue
+            mc_version = profile.get("mc_version")
+            latest = self.latest_fabric_loader_versions.get(mc_version)
+            if (
+                not latest
+                or profile.get("fabric_loader_pinned")
+                or profile.get("source_modpack")
+                or profile.get("imported_modpack")
+            ):
+                continue
+            if profile.get("fabric_loader_version") != latest:
+                previous = profile.get("fabric_loader_version")
+                profile["fabric_loader_version"] = latest
+                changed = True
+                self._log(
+                    f"⬆ Upgraded Fabric loader for '{profile.get('name', 'Profile')}' "
+                    f"from {previous or 'default'} to {latest}."
+                )
+            entry = self.cfg.get("installed_versions", {}).get(mc_version)
+            expected_id = f"fabric-loader-{latest}-{mc_version}"
+            if isinstance(entry, dict) and entry.get("fabric_profile_id") != expected_id:
+                entry["fabric_profile_id"] = expected_id
+                changed = True
+        if changed:
+            config.save(self.cfg)
+            self._refresh_profile_list()
 
     def _maybe_create_default_profiles(self):
         """On first launch, auto-create two default profiles."""
@@ -2990,6 +3350,11 @@ class MainWindow(ctk.CTk):
                 "mods": list(AVAILABLE_MODS.keys()),
                 "instance_id": uuid.uuid4().hex,
             }
+            loader_version = self.latest_fabric_loader_versions.get(
+                self.fabric_versions[0]
+            )
+            if loader_version:
+                fabric_profile["fabric_loader_version"] = loader_version
             profiles_created.append(fabric_profile)
 
         if profiles_created:
@@ -3060,6 +3425,10 @@ class MainWindow(ctk.CTk):
                         "type": "fabric",
                         "mods": list(AVAILABLE_MODS.keys()),
                         "instance_id": uuid.uuid4().hex,
+                        **(
+                            {"fabric_loader_version": self.latest_fabric_loader_versions[latest_fabric]}
+                            if latest_fabric in self.latest_fabric_loader_versions else {}
+                        ),
                     })
                     changed = True
 
@@ -3092,6 +3461,9 @@ class MainWindow(ctk.CTk):
                 mod_text = f"{mod_count} installed mod{'s' if mod_count != 1 else ''}"
             except (OSError, ValueError, RuntimeError):
                 mod_text = "Mod count unavailable"
+            loader_version = p.get("fabric_loader_version") or getattr(
+                self, "latest_fabric_loader_versions", {}
+            ).get(p.get("mc_version"))
 
             card = ctk.CTkFrame(
                 self.profile_list_frame, fg_color=BG_CARD,
@@ -3100,20 +3472,43 @@ class MainWindow(ctk.CTk):
                 corner_radius=12,
             )
             card.pack(fill="x", pady=5, padx=2)
+            card.configure(height=76)
+            card.grid_propagate(False)
+            card.grid_columnconfigure(0, weight=1)
+            card.grid_rowconfigure(0, weight=1)
             details = (
                 f"{p.get('mc_version', 'Unknown version')}  ·  {profile_type}  ·  "
+                + (
+                    f"Fabric {loader_version}  ·  "
+                    if p.get("type") == "fabric" and loader_version
+                    else ""
+                )
+                +
                 f"{status}  ·  {mod_text}"
                 f"{'  ·  ACTIVE' if p.get('name') == active else ''}"
             )
+            select_area = ctk.CTkFrame(card, fg_color="transparent")
+            select_area.grid(row=0, column=0, sticky="nsew", padx=(10, 4), pady=8)
+            select_area.grid_columnconfigure(0, weight=1)
+            select_area.grid_rowconfigure(0, weight=1)
             select = ctk.CTkButton(
-                card,
-                text=f"{p.get('name', 'Unnamed profile')}\n{details}",
-                anchor="w", height=64, corner_radius=10,
+                select_area,
+                text=p.get("name", "Unnamed profile"),
+                anchor="w", height=25, corner_radius=8,
                 fg_color="transparent", hover_color=BG_SECONDARY,
-                text_color=TEXT_FG, font=ctk.CTkFont(size=12),
+                text_color=TEXT_FG, font=ctk.CTkFont(size=13, weight="bold"),
                 command=lambda idx=i: self._on_profile_selected(idx),
             )
-            select.pack(side="left", fill="both", expand=True, padx=(6, 2), pady=5)
+            select.grid(row=0, column=0, sticky="ew")
+            details_label = ctk.CTkLabel(
+                select_area,
+                text=details,
+                text_color=TEXT_MUTED,
+                anchor="w",
+                font=ctk.CTkFont(size=10),
+                wraplength=480,
+            )
+            details_label.grid(row=1, column=0, sticky="ew", padx=10)
             self._profile_buttons.append(select)
             ctk.CTkButton(
                 card, text="Edit", width=58, height=30,
@@ -3121,21 +3516,39 @@ class MainWindow(ctk.CTk):
                 border_color=BORDER_COL, text_color=TEXT_FG,
                 hover_color=BG_SECONDARY,
                 command=lambda idx=i: self._on_profile_selected(idx) or self._on_edit_profile(),
-            ).pack(side="right", padx=4)
+            ).grid(row=0, column=1, padx=4)
             ctk.CTkButton(
                 card, text="Delete", width=62, height=30,
                 fg_color="transparent", border_width=1,
                 border_color=self.theme["RED"], text_color=self.theme["RED"],
                 hover_color=BG_SECONDARY,
                 command=lambda idx=i: self._on_delete_profile(idx),
-            ).pack(side="right", padx=4)
+            ).grid(row=0, column=3, padx=(4, 8))
             ctk.CTkButton(
                 card, text="Show Folder", width=92, height=30,
                 fg_color="transparent", border_width=1,
                 border_color=BORDER_COL, text_color=TEXT_FG,
                 hover_color=BG_SECONDARY,
                 command=lambda p=p: self._open_profile_folder(p),
-            ).pack(side="right", padx=4)
+            ).grid(row=0, column=2, padx=4)
+            card.bind(
+                "<Enter>",
+                lambda _event, widget=card:
+                self._animate_widget_color(widget, self.theme["BG_SECONDARY"]),
+                add="+",
+            )
+            card.bind(
+                "<Leave>",
+                lambda _event, widget=card:
+                self._animate_widget_color(widget, BG_CARD),
+                add="+",
+            )
+            for child in (select_area, select, details_label):
+                child.bind(
+                    "<Button-1>",
+                    lambda _event, idx=i: self._on_profile_selected(idx),
+                    add="+",
+                )
 
         if active:
             for i, p in enumerate(profiles):
@@ -3216,9 +3629,14 @@ class MainWindow(ctk.CTk):
             messagebox.showerror("Could not open profile folder", str(exc), parent=self)
 
     def _update_info_card(self, profile: dict):
+        loader = profile.get("fabric_loader_version") or getattr(
+            self, "latest_fabric_loader_versions", {}
+        ).get(profile.get("mc_version"))
+        loader_text = f"  ·  Fabric loader {loader}" if loader and profile.get("type") == "fabric" else ""
         self.info_version_lbl.configure(
             text=f"MC {profile.get('mc_version', '?')}  ·  {profile.get('type', 'vanilla').title()}  ·  "
                  f"{'Installed' if self._is_installed_for_profile(profile) else 'Not installed'}"
+                 f"{loader_text}"
         )
         try:
             count = sum(
@@ -3242,6 +3660,7 @@ class MainWindow(ctk.CTk):
             self.home_profile_name.configure(text="Select a profile to get started")
             self.home_profile_details.configure(text="Create a profile to install and launch Minecraft.")
             self.home_account_label.configure(text="Choose an offline username or sign in with Microsoft.")
+            self._refresh_home_skin()
             return
         install_state = "Installed" if self._is_installed_for_profile(profile) else "Ready to install"
         self.home_profile_name.configure(text=profile.get("name", "Unnamed profile"))
@@ -3259,6 +3678,52 @@ class MainWindow(ctk.CTk):
         else:
             username = self.username_var.get().strip()
             self.home_account_label.configure(text=f"Offline profile · {username or 'No username selected'}")
+        self._refresh_home_skin()
+
+    def _refresh_home_skin(self):
+        if not hasattr(self, "home_skin_label"):
+            return
+        skin = None
+        username = self.username_var.get().strip() if hasattr(self, "username_var") else ""
+        skin_path = None
+        if username:
+            try:
+                candidate = skin_store.account_cosmetic_dir(
+                    account_store.offline_uuid(username)
+                ) / "skin.png"
+                if candidate.is_file() and not candidate.is_symlink():
+                    skin_path = candidate
+            except (OSError, ValueError):
+                skin_path = None
+        try:
+            skin_key = (
+                username,
+                str(skin_path) if skin_path else None,
+                skin_path.stat().st_mtime_ns if skin_path else None,
+                skin_path.stat().st_size if skin_path else None,
+            )
+        except OSError:
+            skin_path = None
+            skin_key = (username, None, None, None)
+        if getattr(self, "_home_skin_key", None) == skin_key:
+            return
+        if skin_path:
+            try:
+                with Image.open(skin_path) as source:
+                    skin = source.convert("RGBA")
+            except (OSError, ValueError):
+                skin = None
+        if skin is None:
+            skin = _default_steve_skin()
+        try:
+            preview = _render_skin_preview(skin)
+        except ValueError:
+            preview = _render_skin_preview(_default_steve_skin())
+        self.home_skin_image = ctk.CTkImage(
+            light_image=preview, dark_image=preview, size=preview.size
+        )
+        self.home_skin_label.configure(image=self.home_skin_image)
+        self._home_skin_key = skin_key
 
     def _on_edit_profile(self):
         profile = self._current_profile()
@@ -3333,6 +3798,14 @@ class MainWindow(ctk.CTk):
         if not profile.get("name"):
             self._log("⚠  Profile name cannot be empty.")
             return
+        if (
+            profile.get("type") == "fabric"
+            and not profile.get("fabric_loader_version")
+            and profile.get("mc_version") in self.latest_fabric_loader_versions
+        ):
+            profile["fabric_loader_version"] = self.latest_fabric_loader_versions[
+                profile["mc_version"]
+            ]
         if any(p["name"] == profile["name"] for p in self.cfg.get("profiles", [])):
             self._log(f"⚠  A profile named '{profile['name']}' already exists.")
             return
@@ -3453,10 +3926,16 @@ class MainWindow(ctk.CTk):
             return False
         fabric_profile_id = entry.get("fabric_profile_id")
         pinned_loader = profile.get("fabric_loader_version")
-        if pinned_loader:
-            expected_id = f"fabric-loader-{pinned_loader}-{mc_version}"
-            if fabric_profile_id != expected_id:
-                return False
+        latest_loader = getattr(self, "latest_fabric_loader_versions", {}).get(mc_version)
+        expected_loader = (
+            pinned_loader
+            if profile.get("fabric_loader_pinned")
+            or profile.get("source_modpack")
+            or profile.get("imported_modpack")
+            else latest_loader or pinned_loader
+        )
+        if expected_loader and fabric_profile_id != f"fabric-loader-{expected_loader}-{mc_version}":
+            return False
         if not isinstance(fabric_profile_id, str) or not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", fabric_profile_id
         ):
@@ -3536,6 +4015,7 @@ class MainWindow(ctk.CTk):
             and not profile.get("source_modpack")
             and not profile.get("launcher_mods_initialized")
         )
+        profile_instance = modrinth.profile_instance_dir(profile)
 
         self._set_busy(True)
         self._log(f"\n{'─'*40}")
@@ -3548,6 +4028,14 @@ class MainWindow(ctk.CTk):
             try:
                 fabric_profile_id = None
                 self._migrate_shared_worlds(profile)
+                if profile_type == "fabric":
+                    disable_incompatible_mods(
+                        profile_instance / "mods",
+                        mc_version,
+                        log=lambda message: self.after(
+                            0, lambda msg=message: self._log(msg)
+                        ),
+                    )
 
                 if needs_install:
                     from core.java_manager import install_java
@@ -3567,8 +4055,17 @@ class MainWindow(ctk.CTk):
                             mc_version,
                             log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
                             progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
-                            loader_version=profile.get("fabric_loader_version"),
+                            loader_version=(
+                                profile.get("fabric_loader_version")
+                                if profile.get("fabric_loader_pinned")
+                                or profile.get("source_modpack")
+                                or profile.get("imported_modpack")
+                                else None
+                            ),
                         )
+                        profile["fabric_loader_version"] = fabric_profile_id.removeprefix(
+                            "fabric-loader-"
+                        ).removesuffix(f"-{mc_version}")
                     self.cfg.setdefault("installed_versions", {})[mc_version] = {
                         "fabric_profile_id": fabric_profile_id,
                         "type": profile_type,
@@ -3582,16 +4079,35 @@ class MainWindow(ctk.CTk):
                         .get("fabric_profile_id")
                     )
 
-                if needs_profile_mods:
+                needs_fabric_api = (
+                    profile_type == "fabric"
+                    and not has_fabric_api(profile_instance / "mods")
+                )
+                if needs_profile_mods or needs_fabric_api:
                     install_mods(
                         mc_version, enabled_mods,
                         log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
                         progress=lambda t, p: self.after(0, lambda tt=t, pp=p: self._on_progress(tt, pp)),
-                        mods_dir=modrinth.profile_instance_dir(profile) / "mods",
+                        mods_dir=profile_instance / "mods",
+                        profile=profile,
                     )
-                    profile["launcher_mods_initialized"] = True
+                    if needs_profile_mods:
+                        profile["launcher_mods_initialized"] = True
                     config.save(self.cfg)
 
+                game_dir = profile_instance
+                if profile_type == "fabric":
+                    disable_incompatible_mods(
+                        game_dir / "mods",
+                        mc_version,
+                        log=lambda message: self.after(
+                            0, lambda msg=message: self._log(msg)
+                        ),
+                    )
+                    if not has_fabric_api(game_dir / "mods"):
+                        raise RuntimeError(
+                            f"Fabric API could not be verified for Minecraft {mc_version}."
+                        )
 
                 self.after(0, lambda: self._log("🚀 Starting game…"))
                 proc = launch(
@@ -3603,7 +4119,7 @@ class MainWindow(ctk.CTk):
                     log=lambda m: self.after(0, lambda msg=m: self._log(msg)),
                     auth_data=auth_data,
                     use_dgpu=use_dgpu,
-                    game_dir=modrinth.profile_instance_dir(profile),
+                    game_dir=game_dir,
                     offline_uuid=offline_identity["id"] if not is_ms else None,
                     java_args=profile.get("java_args", ""),
                     performance_boost=profile.get(
@@ -3611,13 +4127,53 @@ class MainWindow(ctk.CTk):
                     ),
                 )
                 self.after(0, lambda: self._log("🎮 Game launched!"))
-                for line in proc.stdout:
-                    self.after(0, lambda l=line: self._log(l.rstrip()))
-                proc.wait()
-                self.after(
-                    0,
-                    lambda: self._on_worker_done(True, f"Game exited (code {proc.returncode})"),
-                )
+                returncode = proc.wait()
+                if returncode:
+                    diagnostics = []
+
+                    def add_tail(label, path, limit=40):
+                        if path.is_file():
+                            try:
+                                lines = path.read_text(
+                                    encoding="utf-8", errors="replace"
+                                ).splitlines()
+                            except OSError as exc:
+                                diagnostics.append(f"Could not read {path}: {exc}")
+                            else:
+                                diagnostics.append(f"--- {label}: {path} ---")
+                                diagnostics.extend(lines[-limit:])
+
+                    game_log = game_dir / "logs" / "launcher-game.log"
+                    add_tail("Last 40 lines of launcher-game.log", game_log)
+                    add_tail("Last 40 lines of latest.log", game_dir / "logs" / "latest.log")
+                    crash_reports = game_dir / "crash-reports"
+                    if crash_reports.is_dir():
+                        for report in sorted(crash_reports.glob("*.txt")):
+                            add_tail("Crash report", report)
+                    for fatal_log in sorted(game_dir.glob("hs_err_pid*.log")):
+                        add_tail("JVM fatal error log", fatal_log)
+                    if diagnostics:
+                        self.after(
+                            0,
+                            lambda lines=diagnostics: [
+                                self._log(line) for line in lines
+                            ],
+                        )
+                    self.after(
+                        0,
+                        lambda code=returncode, path=game_log: self._on_worker_done(
+                            False,
+                            f"Minecraft exited unexpectedly (code {code}). "
+                            f"Game output was saved to {path}.",
+                        ),
+                    )
+                else:
+                    self.after(
+                        0,
+                        lambda: self._on_worker_done(
+                            True, f"Game exited normally (code {returncode})"
+                        ),
+                    )
             except Exception as e:
                 self.after(0, lambda err=e: self._on_worker_done(False, str(err)))
 
@@ -3686,22 +4242,31 @@ class MainWindow(ctk.CTk):
             self._update_home_profile(profile)
 
     def _on_progress(self, task: str, pct: int):
-        self.progress_bar.set(pct / 100)
+        if not self._busy:
+            self.progress_bar.set(pct / 100)
         self.status_lbl.configure(text=f"{task}: {pct}%")
 
     def _on_worker_done(self, success: bool, message: str):
         self._set_busy(False)
+        self.progress_bar.stop()
         self.progress_bar.set(1.0 if success else 0.0)
         self._log(f"{'✅' if success else '❌'} {message}")
-        self.status_lbl.configure(text="Ready.")
+        self.status_lbl.configure(
+            text="Ready." if success else message,
+            text_color=TEXT_MUTED if success else self.theme["RED"],
+        )
         self._refresh_profile_list()
         self._refresh_buttons()
 
     def _set_busy(self, busy: bool):
+        self._busy = busy
         state = "disabled" if busy else "normal"
         self.play_btn.configure(state=state)
         self.new_btn.configure(state=state)
-        if not busy:
+        if busy:
+            self.progress_bar.start()
+        else:
+            self.progress_bar.stop()
             self._refresh_buttons()  # restore correct label after busy clears
 
     def _log(self, text: str):
