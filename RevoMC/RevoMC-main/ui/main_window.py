@@ -3831,7 +3831,7 @@ class MainWindow(ctk.CTk):
             if refreshed:
                 def _update():
                     self._ms_account = refreshed
-                    segit push origin mainlf._refresh_auth_panel()
+                    self._refresh_auth_panel()
                     self._refresh_buttons()
                 self.after(0, _update)
             else:
