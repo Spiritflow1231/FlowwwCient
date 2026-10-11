@@ -95,6 +95,26 @@ def _download_project_icon(url: str):
         return image
 
 
+def _project_card_content(project: dict, category: str, game_version: str) -> tuple[str, str, str]:
+    title = project.get("title") or project.get("slug") or "Untitled project"
+    description = project.get("description") or "No description provided."
+    author = project.get("author") or "Unknown author"
+    category_label = ProfileEditorWindow.CATEGORY_LABELS.get(
+        category, category.title()
+    )
+    details = f"by {author}  ·  {category_label}  ·  MC {game_version}"
+    categories = project.get("display_categories") or project.get("categories") or []
+    if categories:
+        details += f"  ·  Loaders/categories: {', '.join(str(value) for value in categories[:3])}"
+    supported_versions = project.get("versions")
+    if isinstance(supported_versions, list) and supported_versions:
+        details += f"  ·  Versions: {', '.join(map(str, supported_versions[:4]))}"
+    downloads = project.get("downloads")
+    if isinstance(downloads, int) and downloads >= 0:
+        details += f"  ·  {downloads:,} downloads"
+    return title, description, details
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -225,6 +245,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         ("Datapacks", "datapacks"),
         ("Modpacks", "modpacks"),
     ]
+    CATEGORY_LABELS = {key: label for label, key in CATEGORIES}
 
     def __init__(self, parent, profile, initial_category="overview"):
         super().__init__(parent)
@@ -243,6 +264,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self._project_images = {}
         self._active_install_project_id = None
         self.page_offset = 0
+        self._latest_version_mode = False
 
         self.title(f"Edit Profile — {profile.get('name', 'Profile')}")
         self.geometry("1000x650")
@@ -342,7 +364,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
 
         self.heading = ctk.CTkLabel(
             self.content,
-            text=dict(self.CATEGORIES)[self.category],
+            text=self.CATEGORY_LABELS[self.category],
             text_color=self.theme["TEXT_FG"],
             font=ctk.CTkFont(size=20, weight="bold"),
         )
@@ -506,7 +528,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self.parent._show_page("profiles")
 
     def _select_category(self, category):
-        if category not in dict(self.CATEGORIES):
+        if category not in self.CATEGORY_LABELS:
             return
         self.category = category
         self.page_offset = 0
@@ -540,6 +562,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         if self.category == "overview":
             return
         self.page_offset = 0
+        self._latest_version_mode = False
         self.tab = "Browse"
         self.installed_btn.configure(
             fg_color="transparent",
@@ -553,8 +576,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
 
     def _refresh_content(self):
         self._request_serial += 1
-        labels = dict(self.CATEGORIES)
-        self.heading.configure(text=labels[self.category])
+        self.heading.configure(text=self.CATEGORY_LABELS[self.category])
         if self.category != "overview":
             category_names = {
                 "mods": "mods",
@@ -1133,20 +1155,12 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         ).grid(row=0, column=2, rowspan=2, padx=(0, 12), pady=10)
 
     def _render_project(self, project: dict):
-        title = project.get("title") or project.get("slug") or "Untitled project"
-        description = project.get("description") or "No description provided."
-        author = project.get("author") or "Unknown author"
-        category_label = dict(self.CATEGORIES).get(self.category, self.category.title())
-        details = f"by {author}  ·  {category_label}  ·  MC {self.profile.get('mc_version', '?')}"
-        categories = project.get("display_categories") or project.get("categories") or []
-        if categories:
-            details += f"  ·  Loaders/categories: {', '.join(str(value) for value in categories[:3])}"
-        supported_versions = project.get("versions")
-        if isinstance(supported_versions, list) and supported_versions:
-            details += f"  ·  Versions: {', '.join(map(str, supported_versions[:4]))}"
-        downloads = project.get("downloads")
-        if isinstance(downloads, int) and downloads >= 0:
-            details += f"  ·  {downloads:,} downloads"
+        game_version = project.get(
+            "_flowww_game_version", self.profile.get("mc_version", "?")
+        )
+        title, description, details = _project_card_content(
+            project, self.category, game_version
+        )
         card = ctk.CTkFrame(
             self.results, fg_color=self.theme["BG_SECONDARY"],
             corner_radius=10, border_width=1,
@@ -1253,11 +1267,12 @@ class ProfileEditorWindow(ctk.CTkToplevel):
             for record in records
         )
 
-    def _search_projects(self):
+    def _search_projects(self, latest_versions: bool = False):
         query = self.search.get().strip()
         self._request_serial += 1
         serial = self._request_serial
         category = self.category
+        self._latest_version_mode = latest_versions
         self._clear_results()
         self._browse_projects = []
         self._project_buttons.clear()
@@ -1269,15 +1284,46 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self._set_status("Searching Modrinth…")
         self._show_state("Searching Modrinth…")
 
+        game_versions = (
+            list(dict.fromkeys(self.parent.all_versions[:3]))
+            if latest_versions
+            else [self.profile.get("mc_version", "")]
+        )
+        if not game_versions or any(
+            not isinstance(version, str) or not version
+            for version in game_versions
+        ):
+            self._show_browse_state(
+                "The launcher could not determine supported Minecraft versions.",
+                retry=True,
+            )
+            return
+
         def worker():
             try:
-                projects = modrinth.search_projects(
-                    category,
-                    query,
-                    self.profile.get("mc_version", ""),
-                    self.profile.get("type", "vanilla"),
-                    self.page_offset,
-                )
+                if latest_versions:
+                    projects_by_id = {}
+                    for game_version in game_versions:
+                        for project in modrinth.search_projects(
+                            category,
+                            query,
+                            game_version,
+                            self.profile.get("type", "vanilla"),
+                        ):
+                            project_id = project.get("project_id") or project.get("slug")
+                            if project_id and project_id not in projects_by_id:
+                                project = dict(project)
+                                project["_flowww_game_version"] = game_version
+                                projects_by_id[project_id] = project
+                    projects = list(projects_by_id.values())
+                else:
+                    projects = modrinth.search_projects(
+                        category,
+                        query,
+                        game_versions[0],
+                        self.profile.get("type", "vanilla"),
+                        self.page_offset,
+                    )
                 result = (projects, None)
             except Exception as exc:
                 result = (None, str(exc))
@@ -1289,21 +1335,39 @@ class ProfileEditorWindow(ctk.CTkToplevel):
                 self._clear_results()
                 if error:
                     self._set_status(f"Could not search Modrinth: {error}")
-                    self._show_state(f"Could not search Modrinth: {error}")
+                    self._show_browse_state(
+                        f"Could not search Modrinth: {error}",
+                        retry=True,
+                    )
                 elif not projects:
-                    self._show_state("No compatible projects were found. Try another search.")
+                    self._show_browse_state(
+                        f"No compatible projects were found for "
+                        f"Minecraft {self.profile.get('mc_version', '?')}.",
+                        latest_versions=not latest_versions,
+                    )
                     self.page_status.configure(text="")
                     self.previous_page_btn.configure(state="disabled")
                     self.next_page_btn.configure(state="disabled")
                 else:
                     self._browse_projects = projects
-                    self.status.configure(text=f"Found {len(projects)} compatible projects.")
-                    self.page_status.configure(text=f"Page {self.page_offset // 20 + 1}")
+                    version_label = (
+                        " across the latest 3 supported versions"
+                        if latest_versions else ""
+                    )
+                    self.status.configure(
+                        text=f"Found {len(projects)} compatible projects{version_label}."
+                    )
+                    self.page_status.configure(
+                        text="Latest 3 versions" if latest_versions
+                        else f"Page {self.page_offset // 20 + 1}"
+                    )
                     self.previous_page_btn.configure(
-                        state="normal" if self.page_offset else "disabled"
+                        state="normal" if self.page_offset and not latest_versions
+                        else "disabled"
                     )
                     self.next_page_btn.configure(
-                        state="normal" if len(projects) == 20 else "disabled"
+                        state="normal" if len(projects) == 20 and not latest_versions
+                        else "disabled"
                     )
                     for project in projects:
                         self._render_project(project)
@@ -1311,6 +1375,43 @@ class ProfileEditorWindow(ctk.CTkToplevel):
             self._post(update)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _show_browse_state(
+        self,
+        text: str,
+        *,
+        retry: bool = False,
+        latest_versions: bool = False,
+    ):
+        self._clear_results()
+        ctk.CTkLabel(
+            self.results,
+            text=text,
+            text_color=self.theme["TEXT_MUTED"],
+            font=ctk.CTkFont(size=13),
+            wraplength=650,
+            justify="left",
+        ).pack(anchor="w", padx=14, pady=(18, 10))
+        actions = ctk.CTkFrame(self.results, fg_color="transparent")
+        actions.pack(anchor="w", padx=14, pady=(0, 14))
+        if retry:
+            ctk.CTkButton(
+                actions,
+                text="Retry",
+                width=90,
+                command=self._search_projects,
+            ).pack(side="left", padx=(0, 8))
+        if latest_versions:
+            ctk.CTkButton(
+                actions,
+                text="Show results for the latest 3 supported versions",
+                width=300,
+                fg_color="transparent",
+                border_width=1,
+                border_color=self.theme["BORDER_COL"],
+                text_color=self.theme["TEXT_FG"],
+                command=lambda: self._search_projects(latest_versions=True),
+            ).pack(side="left")
 
     def _change_page(self, direction: int):
         next_offset = self.page_offset + direction * 20

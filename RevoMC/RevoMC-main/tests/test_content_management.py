@@ -9,7 +9,11 @@ from unittest.mock import Mock, patch
 from PIL import Image
 
 from core import config, modrinth
-from ui.main_window import ProfileEditorWindow, validate_cosmetic_image
+from ui.main_window import (
+    ProfileEditorWindow,
+    _project_card_content,
+    validate_cosmetic_image,
+)
 
 
 class _Widget:
@@ -38,6 +42,39 @@ def _bare_editor(tab="Browse"):
 
 
 class InstalledContentDiscoveryTests(unittest.TestCase):
+    def test_editor_category_keys_resolve_to_visible_headings(self):
+        self.assertEqual(
+            ProfileEditorWindow.CATEGORY_LABELS,
+            {
+                "overview": "Overview",
+                "mods": "Mods",
+                "resourcepacks": "Resource Packs",
+                "shaderpacks": "Shader Packs",
+                "datapacks": "Datapacks",
+                "modpacks": "Modpacks",
+            },
+        )
+
+    def test_browse_card_content_uses_fake_response_and_active_category(self):
+        title, description, details = _project_card_content(
+            {
+                "title": "Sample Pack",
+                "description": "A useful resource pack.",
+                "author": "Flowww",
+                "display_categories": ["16x"],
+                "versions": ["1.21.11", "1.21.10"],
+                "downloads": 1234,
+            },
+            "resourcepacks",
+            "1.21.11",
+        )
+
+        self.assertEqual(title, "Sample Pack")
+        self.assertEqual(description, "A useful resource pack.")
+        self.assertIn("Resource Packs", details)
+        self.assertIn("MC 1.21.11", details)
+        self.assertIn("1,234 downloads", details)
+
     def test_missing_category_directory_is_empty(self):
         with tempfile.TemporaryDirectory() as temp:
             instance = Path(temp) / "instance"
