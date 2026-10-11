@@ -52,6 +52,7 @@ class InstalledContentDiscoveryTests(unittest.TestCase):
                 "shaderpacks": "Shader Packs",
                 "datapacks": "Datapacks",
                 "modpacks": "Modpacks",
+                "client_mods": "Client Mods",
             },
         )
 

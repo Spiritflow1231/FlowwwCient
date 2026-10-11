@@ -21,6 +21,7 @@ import uuid
 import copy
 import zipfile
 import re
+import queue
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from PIL import Image
@@ -234,7 +235,7 @@ def _render_skin_preview(skin: Image.Image) -> Image.Image:
     return canvas
 
 
-class ProfileEditorWindow(ctk.CTkToplevel):
+class ProfileEditorWindow(ctk.CTkFrame):
     """Profile-specific content manager for FlowwwClient."""
 
     CATEGORIES = [
@@ -244,11 +245,12 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         ("Shader Packs", "shaderpacks"),
         ("Datapacks", "datapacks"),
         ("Modpacks", "modpacks"),
+        ("Client Mods", "client_mods"),
     ]
     CATEGORY_LABELS = {key: label for label, key in CATEGORIES}
 
     def __init__(self, parent, profile, initial_category="overview"):
-        super().__init__(parent)
+        super().__init__(parent.page_container, fg_color="transparent")
 
         self.parent = parent
         self.profile = profile
@@ -265,13 +267,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self._active_install_project_id = None
         self.page_offset = 0
         self._latest_version_mode = False
-
-        self.title(f"Edit Profile — {profile.get('name', 'Profile')}")
-        self.geometry("1000x650")
-        self.minsize(800, 520)
-        self.configure(fg_color=self.theme["BG_PRIMARY"])
-        self.transient(parent)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._ui_callbacks = queue.SimpleQueue()
 
         self._build_ui()
 
@@ -281,10 +277,11 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         ).get(self.profile.get("mc_version"))
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", padx=22, pady=(18, 12))
+        header.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             header,
-            text=self.profile.get("name", "Profile"),
+            text="Edit Profile",
             text_color=self.theme["TEXT_FG"],
             font=ctk.CTkFont(size=23, weight="bold"),
         ).pack(side="left")
@@ -303,52 +300,11 @@ class ProfileEditorWindow(ctk.CTkToplevel):
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=22, pady=(0, 18))
-        body.grid_columnconfigure(1, weight=1)
+        body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
 
-        # Left category sidebar
-        sidebar = ctk.CTkFrame(
-            body,
-            width=185,
-            fg_color=self.theme["BG_SECONDARY"],
-            corner_radius=12,
-            border_width=1,
-            border_color=self.theme["BORDER_COL"],
-        )
-        sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        sidebar.grid_propagate(False)
-
-        ctk.CTkLabel(
-            sidebar,
-            text="PROFILE CONTENTS",
-            text_color=self.theme["TEXT_MUTED"],
-            font=ctk.CTkFont(size=10, weight="bold"),
-        ).pack(anchor="w", padx=14, pady=(18, 12))
-        ctk.CTkButton(
-            sidebar, text="←  Back to Profiles", height=34,
-            fg_color="transparent", border_width=1,
-            border_color=self.theme["BORDER_COL"],
-            text_color=self.theme["TEXT_FG"],
-            hover_color=self.theme["BG_PRIMARY"],
-            command=self._back_to_profiles,
-        ).pack(fill="x", padx=9, pady=(0, 10))
-
-        self.category_buttons = {}
-
-        for label, key in self.CATEGORIES:
-            button = ctk.CTkButton(
-                sidebar,
-                text=label,
-                anchor="w",
-                height=38,
-                corner_radius=8,
-                fg_color=self.theme["ACCENT"] if key == self.category else "transparent",
-                text_color=self.theme["BG_PRIMARY"] if key == self.category else self.theme["TEXT_FG"],
-                hover_color=self.theme["ACCENT_DARK"],
-                command=lambda k=key: self._select_category(k),
-            )
-            button.pack(fill="x", padx=9, pady=3)
-            self.category_buttons[key] = button
+        self.parent._show_profile_editor_navigation(self)
+        self.category_buttons = self.parent._profile_category_buttons
 
         # Right content panel
         self.content = ctk.CTkFrame(
@@ -358,7 +314,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
             border_width=1,
             border_color=self.theme["BORDER_COL"],
         )
-        self.content.grid(row=0, column=1, sticky="nsew")
+        self.content.grid(row=0, column=0, sticky="nsew")
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(4, weight=1)
 
@@ -519,13 +475,13 @@ class ProfileEditorWindow(ctk.CTkToplevel):
         self.install_progress.grid_remove()
 
         self._refresh_content()
+        self.after(20, self._drain_ui_callbacks)
 
     def _back_to_profiles(self):
         if self._working:
             self._cancel_install()
             return
-        self.destroy()
-        self.parent._show_page("profiles")
+        self.parent._leave_profile_editor()
 
     def _select_category(self, category):
         if category not in self.CATEGORY_LABELS:
@@ -577,6 +533,13 @@ class ProfileEditorWindow(ctk.CTkToplevel):
     def _refresh_content(self):
         self._request_serial += 1
         self.heading.configure(text=self.CATEGORY_LABELS[self.category])
+        if self.category == "client_mods":
+            self.search_row.grid_remove()
+            self.world_frame.grid_remove()
+            self.tabs.grid_remove()
+            self._clear_results()
+            self._show_state("Client Mods will be available here.")
+            return
         if self.category != "overview":
             category_names = {
                 "mods": "mods",
@@ -1709,11 +1672,18 @@ class ProfileEditorWindow(ctk.CTkToplevel):
             self.status.configure(text=message)
 
     def _post(self, callback):
+        self._ui_callbacks.put(callback)
+
+    def _drain_ui_callbacks(self):
+        if not self.winfo_exists():
+            return
         try:
-            if self.winfo_exists():
-                self.after(0, callback)
-        except TclError:
+            while True:
+                callback = self._ui_callbacks.get_nowait()
+                callback()
+        except queue.Empty:
             pass
+        self.after(20, self._drain_ui_callbacks)
 
     def _cancel_install(self):
         if self._cancel_event:
@@ -1855,7 +1825,7 @@ class ProfileEditorWindow(ctk.CTkToplevel):
             self._cancel_install()
             return
         self._request_serial += 1
-        self.destroy()
+        self.parent._leave_profile_editor()
 # ── New Profile Dialog ─────────────────────────────────────────────────────────
 
 class NewProfileDialog(ctk.CTkToplevel):
@@ -2789,6 +2759,8 @@ class MainWindow(ctk.CTk):
         self._selected_profile_idx: int = -1
         self._ms_account: dict | None = None
         self._username_trace_id = None
+        self._profile_editor = None
+        self._profile_category_buttons = {}
 
         self._setup_ui()
         self._check_java()
@@ -2820,6 +2792,7 @@ class MainWindow(ctk.CTk):
             root, fg_color=BG_SECONDARY, corner_radius=14,
             border_width=1, border_color=BORDER_COL, width=184,
         )
+        self.navigation = navigation
         navigation.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 18))
         navigation.grid_propagate(False)
         ctk.CTkLabel(
@@ -2958,6 +2931,7 @@ class MainWindow(ctk.CTk):
         content.grid(row=1, column=1, sticky="nsew")
         content.grid_columnconfigure(0, weight=1)
         content.grid_rowconfigure(0, weight=1)
+        self.page_container = content
 
         self._build_left(content)
         self._build_right(content)
@@ -2967,7 +2941,141 @@ class MainWindow(ctk.CTk):
             "profiles": self.left_panel,
             "console": self.right_panel,
         }
+        self._global_navigation_widgets = [
+            (widget, widget.pack_info()) for widget in navigation.winfo_children()
+        ]
         self._show_page("home")
+
+    def _show_profile_editor_navigation(self, editor):
+        for widget, _pack_info in self._global_navigation_widgets:
+            widget.pack_forget()
+        for widget in self._profile_nav_widgets if hasattr(self, "_profile_nav_widgets") else []:
+            widget.destroy()
+
+        self._profile_nav_widgets = []
+        self._profile_category_buttons = {}
+
+        def add(widget, **pack_options):
+            widget.pack(**pack_options)
+            self._profile_nav_widgets.append(widget)
+            return widget
+
+        add(
+            ctk.CTkLabel(
+                self.navigation,
+                text="PROFILE CONTENTS",
+                text_color=self.theme["TEXT_MUTED"],
+                font=ctk.CTkFont(size=10, weight="bold"),
+            ),
+            anchor="w",
+            padx=14,
+            pady=(18, 10),
+        )
+        add(
+            ctk.CTkLabel(
+                self.navigation,
+                text=editor.profile.get("name", "Profile"),
+                text_color=self.theme["TEXT_FG"],
+                font=ctk.CTkFont(size=13, weight="bold"),
+                wraplength=148,
+                justify="left",
+            ),
+            anchor="w",
+            padx=14,
+            pady=(0, 3),
+        )
+        loader_version = editor.profile.get("fabric_loader_version") or (
+            self.latest_fabric_loader_versions.get(editor.profile.get("mc_version"))
+        )
+        profile_details = (
+            f"Minecraft {editor.profile.get('mc_version', '?')} · "
+            f"{editor.profile.get('type', 'vanilla').title()}"
+        )
+        if editor.profile.get("type") == "fabric" and loader_version:
+            profile_details += f" {loader_version}"
+        add(
+            ctk.CTkLabel(
+                self.navigation,
+                text=profile_details,
+                text_color=self.theme["TEXT_MUTED"],
+                font=ctk.CTkFont(size=10),
+                wraplength=148,
+                justify="left",
+            ),
+            anchor="w",
+            padx=14,
+            pady=(0, 12),
+        )
+        add(
+            ctk.CTkButton(
+                self.navigation,
+                text="←  Back to Profiles",
+                height=36,
+                fg_color="transparent",
+                border_width=1,
+                border_color=self.theme["BORDER_COL"],
+                text_color=self.theme["TEXT_FG"],
+                hover_color=self.theme["BG_PRIMARY"],
+                command=editor._back_to_profiles,
+            ),
+            fill="x",
+            padx=8,
+            pady=(0, 10),
+        )
+        for label, key in editor.CATEGORIES:
+            button = add(
+                ctk.CTkButton(
+                    self.navigation,
+                    text=label,
+                    anchor="w",
+                    height=38,
+                    corner_radius=8,
+                    fg_color=(
+                        self.theme["ACCENT"] if key == editor.category else "transparent"
+                    ),
+                    text_color=(
+                        self.theme["BG_PRIMARY"] if key == editor.category
+                        else self.theme["TEXT_FG"]
+                    ),
+                    hover_color=self.theme["ACCENT_DARK"],
+                    command=lambda category=key: editor._select_category(category),
+                ),
+                fill="x",
+                padx=8,
+                pady=2,
+            )
+            self._profile_category_buttons[key] = button
+
+    def _restore_global_navigation(self):
+        for widget in getattr(self, "_profile_nav_widgets", []):
+            widget.destroy()
+        self._profile_nav_widgets = []
+        for widget, pack_info in self._global_navigation_widgets:
+            options = dict(pack_info)
+            options["in_"] = options.pop("in")
+            widget.pack(**options)
+
+    def _open_profile_editor(self, profile, initial_category="overview"):
+        if self._profile_editor is not None:
+            self._profile_editor.destroy()
+        for frame in self._pages.values():
+            frame.grid_forget()
+        editor = ProfileEditorWindow(self, profile, initial_category)
+        self._profile_editor = editor
+        self._pages["profile_editor"] = editor
+        editor.grid(row=0, column=0, sticky="nsew")
+        self._current_page = "profile_editor"
+        self._set_active_navigation("profile_editor")
+
+    def _leave_profile_editor(self):
+        editor = self._profile_editor
+        self._profile_editor = None
+        self._pages.pop("profile_editor", None)
+        if editor is not None:
+            editor._request_serial += 1
+            editor.destroy()
+        self._restore_global_navigation()
+        self._show_page("profiles")
 
     def _show_page(self, page):
         if not hasattr(self, "_pages"):
@@ -3058,7 +3166,7 @@ class MainWindow(ctk.CTk):
                 parent=self,
             )
             return
-        ProfileEditorWindow(self, profile, initial_category=category)
+        self._open_profile_editor(profile, initial_category=category)
 
     def _open_accounts(self):
         self._set_active_navigation("accounts")
@@ -3832,7 +3940,7 @@ class MainWindow(ctk.CTk):
             self._log("Select a profile before editing.")
             return
 
-        ProfileEditorWindow(self, profile)
+        self._open_profile_editor(profile)
 
     def _rename_profile(self, idx: int):
         profiles = self.cfg.get("profiles", [])
