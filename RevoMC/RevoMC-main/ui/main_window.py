@@ -2944,13 +2944,13 @@ class MainWindow(ctk.CTk):
                 self.all_versions = [v["id"] for v in all_v]
                 self.after(0, lambda: self._log(f"✅ {len(self.all_versions)} total MC releases found."))
             except Exception as e:
-                self.after(0, lambda: self._log(f"❌ Could not fetch MC versions: {e}"))
+                self.after(0, lambda error=e: self._log(f"❌ Could not fetch MC versions: {error}"))
 
             try:
                 self.fabric_versions = fetch_fabric_versions()
                 self.after(0, lambda: self._log(f"✅ {len(self.fabric_versions)} versions supported by Fabric."))
             except Exception as e:
-                self.after(0, lambda: self._log(f"❌ Could not fetch Fabric versions: {e}"))
+                self.after(0, lambda error=e: self._log(f"❌ Could not fetch Fabric versions: {error}"))
 
             self.after(0, self._maybe_create_default_profiles)
             self.after(0, self._auto_update_latest_profiles)
@@ -3078,8 +3078,6 @@ class MainWindow(ctk.CTk):
         self._profile_buttons = []
 
         profiles = self.cfg.get("profiles", [])
-        if self.category == "overview":
-            return
         active = self.cfg.get("active_profile")
 
         for i, p in enumerate(profiles):
