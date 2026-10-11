@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +21,9 @@ from core.installer import MODRINTH_API
 USER_AGENT = "FlowwwClient/1.0 (https://github.com/Spiritflow1231/FlowwwCient)"
 MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+_SEARCH_CACHE_TTL = 120
+_search_cache: dict[tuple, tuple[float, list[dict]]] = {}
+_SEARCH_PAGE_SIZE = 20
 
 CATEGORIES = {
     "mods": ("mod", ".jar"),
@@ -88,27 +92,36 @@ def profile_instance_dir(profile: dict) -> Path:
 
 
 def search_projects(
-    category: str, query: str, game_version: str, loader: str
+    category: str, query: str, game_version: str, loader: str, offset: int = 0
 ) -> list[dict]:
     if category not in CATEGORIES:
         raise ValueError("Unsupported Modrinth category.")
     project_type = CATEGORIES[category][0]
     facets = [[f"project_type:{project_type}"], [f"versions:{game_version}"]]
-    if category in ("mods", "modpacks") and loader == "fabric":
-        facets.append(["categories:fabric"])
-    if category == "mods" and loader != "fabric":
-        return []
-
+    if category in ("mods", "modpacks"):
+        supported_loaders = {"fabric", "forge", "neoforge", "quilt"}
+        if loader not in supported_loaders:
+            return []
+        facets.append([f"categories:{loader}"])
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("Search offset must be a non-negative integer.")
+    cache_key = (category, query, game_version, loader, offset)
+    cached = _search_cache.get(cache_key)
+    if cached and time.monotonic() - cached[0] < _SEARCH_CACHE_TTL:
+        return [dict(hit) for hit in cached[1]]
     params = urllib.parse.urlencode({
         "query": query,
         "facets": json.dumps(facets, separators=(",", ":")),
-        "limit": "40",
+        "limit": str(_SEARCH_PAGE_SIZE),
+        "offset": str(offset),
         "index": "relevance",
     })
     result = _request_json(f"{MODRINTH_API}/search?{params}")
     if not isinstance(result, dict) or not isinstance(result.get("hits"), list):
         raise RuntimeError("Modrinth returned an unexpected project-search response.")
-    return [hit for hit in result["hits"] if isinstance(hit, dict)]
+    hits = [hit for hit in result["hits"] if isinstance(hit, dict)]
+    _search_cache[cache_key] = (time.monotonic(), hits)
+    return [dict(hit) for hit in hits]
 
 
 def compatible_versions(project_id: str, category: str, game_version: str, loader: str) -> list[dict]:
@@ -116,12 +129,14 @@ def compatible_versions(project_id: str, category: str, game_version: str, loade
         raise ValueError("Modrinth returned an invalid project ID.")
     if category not in CATEGORIES:
         raise ValueError("Unsupported Modrinth category.")
-    if category == "mods" and loader != "fabric":
+    if category in ("mods", "modpacks") and loader not in {
+        "fabric", "forge", "neoforge", "quilt", "vanilla"
+    }:
         return []
 
     params = {"game_versions": json.dumps([game_version])}
-    if category in ("mods", "modpacks") and loader == "fabric":
-        params["loaders"] = json.dumps(["fabric"])
+    if category in ("mods", "modpacks") and loader != "vanilla":
+        params["loaders"] = json.dumps([loader])
     url = f"{MODRINTH_API}/project/{urllib.parse.quote(project_id, safe='')}/version?{urllib.parse.urlencode(params)}"
     versions = _request_json(url)
     if not isinstance(versions, list):
@@ -133,7 +148,7 @@ def compatible_versions(project_id: str, category: str, game_version: str, loade
             continue
         loaders = version.get("loaders", [])
         if category in ("mods", "modpacks"):
-            if loader == "fabric" and "fabric" not in loaders:
+            if loader != "vanilla" and loader not in loaders:
                 continue
             if loader == "vanilla" and loaders and not set(loaders).issubset({"minecraft"}):
                 continue
@@ -261,14 +276,67 @@ def download_project_file(
         url, target, expected_hashes=entry.get("hashes"),
         cancel_event=cancel_event, progress=progress,
     )
-    if category != "mods":
-        if not zipfile.is_zipfile(target):
-            target.unlink()
-            raise RuntimeError("The downloaded content is not a valid ZIP archive.")
-    elif not zipfile.is_zipfile(target):
-        target.unlink()
-        raise RuntimeError("The downloaded mod is not a valid JAR archive.")
+    try:
+        if category == "modpacks":
+            if not zipfile.is_zipfile(target):
+                raise RuntimeError("The downloaded modpack is not a valid ZIP archive.")
+        else:
+            validate_content_archive(target, category)
+    except Exception as exc:
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            raise RuntimeError(
+                f"Downloaded content failed validation: {exc} "
+                f"(could not remove the invalid file: {cleanup_error})"
+            ) from exc
+        raise
     return target
+
+
+def validate_content_archive(archive_path: Path, category: str) -> None:
+    """Validate a local Minecraft content archive before adding it to an instance."""
+    if category not in {"mods", "resourcepacks", "datapacks", "shaderpacks"}:
+        raise ValueError("This category does not accept a content archive.")
+    if not archive_path.is_file() or archive_path.is_symlink():
+        raise ValueError("Select a regular content file.")
+    expected_extension = ".jar" if category == "mods" else ".zip"
+    if archive_path.suffix.lower() != expected_extension:
+        raise ValueError(f"{category.title()} must use the {expected_extension} file extension.")
+    if archive_path.stat().st_size > MAX_DOWNLOAD_BYTES:
+        raise ValueError("The selected archive exceeds the allowed file-size limit.")
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            infos = archive.infolist()
+            if len(infos) > 100_000:
+                raise ValueError("The archive contains too many entries.")
+            if sum(info.file_size for info in infos) > MAX_ARCHIVE_BYTES:
+                raise ValueError("The archive expands beyond the allowed size.")
+            names = set()
+            for info in infos:
+                if info.is_dir():
+                    continue
+                safe_path = _safe_relative_path(info.filename)
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise ValueError("Symbolic links are not allowed in content archives.")
+                names.add(safe_path.as_posix())
+            invalid = archive.testzip()
+            if invalid is not None:
+                raise ValueError(f"The archive contains a damaged file: {invalid}")
+            if category in {"resourcepacks", "datapacks"} and "pack.mcmeta" not in names:
+                raise ValueError("This ZIP is missing the Minecraft pack.mcmeta manifest.")
+            if category == "datapacks" and not any(
+                name.startswith("data/") for name in names
+            ):
+                raise ValueError("This ZIP does not contain a datapack data/ directory.")
+            if category == "shaderpacks" and not any(
+                name.startswith("shaders/") or name == "shader.properties"
+                for name in names
+            ):
+                raise ValueError("This ZIP does not appear to contain a shader pack.")
+    except zipfile.BadZipFile as exc:
+        raise ValueError("The selected file is not a valid ZIP/JAR archive.") from exc
 
 
 def install_modpack(
@@ -426,18 +494,40 @@ def list_installed_files(profile: dict, category: str, world_name: str | None = 
         directory = instance / "saves" / world_path.parts[0] / "datapacks"
     else:
         directory = instance / category
-    if not directory.is_dir() or not directory.resolve().is_relative_to(instance.resolve()):
+    if directory.is_symlink():
+        raise ValueError("The profile content directory must not be a symbolic link.")
+    if not directory.is_dir():
         return []
+    if not directory.resolve().is_relative_to(instance.resolve()):
+        raise ValueError("The profile content directory resolves outside this instance.")
     extension = CATEGORIES[category][1]
-    return sorted(
-        (path for path in directory.iterdir()
-         if path.is_file() and path.suffix.lower() == extension),
-        key=lambda path: path.name.lower(),
-    )
+    found = []
+    for path in directory.iterdir():
+        if path.is_symlink():
+            raise ValueError(f"Refusing to follow symbolic link in profile content: {path.name}")
+        if not path.resolve().is_relative_to(directory.resolve()):
+            raise ValueError(f"Profile content points outside its category directory: {path.name}")
+        if category == "mods":
+            matches = path.is_file() and (
+                path.name.lower().endswith(extension)
+                or path.name.lower().endswith(f"{extension}.disabled")
+            )
+        else:
+            matches = (
+                path.is_file() and path.suffix.lower() == extension
+            ) or path.is_dir()
+        if matches:
+            found.append(path)
+    return sorted(found, key=lambda path: path.name.casefold())
 
 
 def remove_installed_file(profile: dict, category: str, file_path: Path, world_name: str | None = None) -> None:
     allowed = list_installed_files(profile, category, world_name)
     if file_path not in allowed:
         raise ValueError("The selected file is not installed in this profile.")
-    file_path.unlink()
+    if file_path.is_symlink():
+        raise ValueError("Refusing to remove a symbolic link.")
+    if file_path.is_dir():
+        shutil.rmtree(file_path)
+    else:
+        file_path.unlink()

@@ -47,6 +47,37 @@ class ModrinthContentTests(unittest.TestCase):
             [["project_type:mod"], ["versions:1.21.1"], ["categories:fabric"]],
         )
 
+    def test_search_routes_each_category_to_its_modrinth_project_type(self):
+        cases = (
+            ("mods", "mod", "fabric", True),
+            ("resourcepacks", "resourcepack", "fabric", False),
+            ("modpacks", "modpack", "fabric", True),
+            ("datapacks", "datapack", "vanilla", False),
+            ("shaderpacks", "shader", "fabric", False),
+        )
+        for category, project_type, loader, uses_fabric_facet in cases:
+            with self.subTest(category=category):
+                with patch(
+                    "core.modrinth._request_json",
+                    return_value={"hits": [{"project_id": category}]},
+                ) as request:
+                    projects = modrinth.search_projects(
+                        category, "test query", "1.21.1", loader
+                    )
+
+                self.assertEqual(projects, [{"project_id": category}])
+                params = urllib.parse.parse_qs(
+                    urllib.parse.urlsplit(request.call_args.args[0]).query
+                )
+                facets = json.loads(params["facets"][0])
+                self.assertEqual(facets[0], [f"project_type:{project_type}"])
+                self.assertIn(["versions:1.21.1"], facets)
+                self.assertEqual(
+                    ["categories:fabric"] in facets,
+                    uses_fabric_facet,
+                )
+                self.assertEqual(params["query"], ["test query"])
+
     def test_version_query_filters_game_version_and_loader(self):
         with patch(
             "core.modrinth._request_json",
@@ -149,6 +180,25 @@ class ModrinthContentTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "integrity check"):
                     modrinth.download_project_file(version, "mods", root)
             self.assertFalse((root / "sample.jar").exists())
+
+    def test_rejects_invalid_downloaded_resourcepack_and_cleans_file(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            data = b"not a resource-pack archive"
+            version = {
+                "files": [{
+                    "filename": "sample.zip",
+                    "url": "https://cdn.modrinth.com/sample.zip",
+                    "primary": True,
+                }],
+            }
+            with patch(
+                "core.modrinth.urllib.request.urlopen",
+                return_value=_FakeResponse(data),
+            ):
+                with self.assertRaisesRegex(ValueError, "valid ZIP/JAR"):
+                    modrinth.download_project_file(version, "resourcepacks", root)
+            self.assertFalse((root / "sample.zip").exists())
 
 
 if __name__ == "__main__":

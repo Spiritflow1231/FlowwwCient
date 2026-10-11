@@ -21,11 +21,12 @@ FlowwwClient provides a premium-style interface while preserving the real Minecr
 - 🟢 Auto-downloads Java (Java 8/17/21/25 based on MC version) — no manual Java install needed
 - 🟢 Dedicated GPU Support: Automatically enables dGPU mode on hybrid graphics systems (Windows Registry & Linux Prime)
 - 🟢 Multiple profiles — run vanilla and modded side by side
-- 🟢 Dedicated navigation for Home, Profiles, Mods, Modpacks, Resource Packs, Shaders, Accounts, Settings, and Console
-- 🟢 Per-profile mod toggles — enable or disable individual mods per profile
-- 🟢 Profile content manager with live Modrinth search for mods, resource packs, modpacks, datapacks, and shader packs
+- 🟢 Crimson, black, and charcoal interface with Play, Profiles, Accounts, Settings, and Logs navigation
+- 🟢 Profile actions for creating, selecting, editing, opening, and removing isolated profile instances
+- 🟢 Profile-scoped content manager with installed-content discovery, imports, and Modrinth search for supported content types
 - 🟢 Per-profile game directories for mods, resource packs, shaders, worlds, and settings
 - 🟢 Imports vanilla and Fabric `.mrpack` modpacks as separate isolated profiles
+- 🟢 Saved offline accounts with standard Minecraft offline UUIDs and per-account local skin/cape previews
 - 🟢 Vanilla profiles support all MC versions including the latest
 - 🟢 Fabric profiles only show versions with confirmed Fabric support
 - 🟢 Automatic retry on failed downloads
@@ -110,8 +111,23 @@ downloaded Java runtimes, Minecraft data, and launcher configuration are stored
 in the user's writable `~/.revomc` directory (not in the application
 installation directory).
 
-The executable contains Windows product metadata but is not code-signed. A
-verified publisher identity requires an appropriate signing certificate.
+The workflow adds Windows product metadata, but metadata such as `CompanyName`
+does not establish a publisher identity or digitally sign the executable. By
+default, the EXE remains unsigned and Windows may display **Unknown Publisher**.
+
+Signing is optional. To enable it, add these GitHub Actions repository secrets:
+
+- `WINDOWS_SIGNING_CERTIFICATE_BASE64`: the base64-encoded bytes of a PFX
+  containing a current code-signing certificate and its private key
+- `WINDOWS_SIGNING_CERTIFICATE_PASSWORD`: the PFX password
+
+The workflow imports the PFX only on the runner, signs with SHA-256 and an RFC
+3161 timestamp, verifies the Authenticode signature and trust chain, then
+removes the temporary PFX and imported private key. If neither secret is set,
+the existing unsigned build, smoke test, ZIP packaging, and artifact upload
+continue. If signing is configured but the certificate is invalid or signing
+or verification fails, the workflow fails instead of packaging an unverified
+unsigned EXE as though signing had succeeded.
 
 ---
 
@@ -150,6 +166,8 @@ RevoMC stores launcher data in `~/.revomc/` and shares game files with the stand
 ```
 ~/.revomc/
 ├── config.json
+├── profiles.json
+├── accounts.json
 ├── runtime/              # Bundled Java JRE (auto-downloaded based on MC version)
 ├── versions/             # Vanilla + Fabric version profiles
 ├── libraries/            # Shared JARs for Minecraft and Fabric
@@ -159,7 +177,9 @@ RevoMC stores launcher data in `~/.revomc/` and shares game files with the stand
 ├── mods/
 ├── resourcepacks/
 ├── shaderpacks/
+├── config/
 └── saves/                 # Profile-specific worlds and their datapacks
+    └── <world>/datapacks/
 
 ~/.minecraft/             # Shared Minecraft assets and pre-existing worlds
 └── assets/               # Shared game assets
@@ -167,13 +187,17 @@ RevoMC stores launcher data in `~/.revomc/` and shares game files with the stand
 
 Use a profile's **Edit** action to open its content manager. Mod and pack downloads are installed only into that profile's game directory. Datapacks require selecting a world in that profile; worlds found in the standard `.minecraft/saves` directory are copied into each profile the first time it launches. Modpack imports support vanilla and Fabric only; Forge and NeoForge packs are rejected rather than partially installed.
 
+The sidebar contains **Play**, **Profiles**, **Accounts**, **Settings**, and **Logs**. Edit a profile to enter its profile-scoped content manager (Overview, Mods, Resource Packs, Shaders, Datapacks, and Modpacks). Each profile has an isolated game directory and a `profile.json` manifest. Offline accounts and their UUIDs are stored in `accounts.json`; their cosmetics are kept in per-account folders below `~/.revomc/cosmetics/`.
+
+The performance option tunes JVM garbage collection and profile memory. It can reduce local game overhead but cannot improve a poor Wi-Fi connection or guarantee lower server latency. Current profile creation and game installation support Vanilla and Fabric; Forge, NeoForge, and Quilt launching are not implemented. Local skin and cape images are account-specific previews only: no local skin server or skin-loader integration is configured, so images do not currently appear in-game or to other players. Even with a client-side skin loader, offline cosmetics generally only appear on that client, in singleplayer/LAN, and on servers that permit them.
+
 ---
 
 ## Notes
 
 - **Microsoft login is supported** — switch to "Microsoft" mode in the launcher header and sign in with your Microsoft account to play on online-mode servers. Your session persists between launches via refresh tokens.
 - **Offline mode still works** — if you don't have a Microsoft account or prefer LAN/offline play, use "Offline" mode with any username.
-- **Skins and capes** — selecting local skins or capes for offline accounts is not supported. Offline accounts are not Microsoft-authenticated, and their appearance may not be available on online-mode servers.
+- **Skins and capes** — the Accounts window can save local PNG previews. They are not applied to an account or Minecraft; offline accounts are not Microsoft-authenticated, and their appearance may not be available on online-mode servers.
 - **Dedicated GPU (dGPU) mode** — enabled by default on systems with hybrid graphics. On Windows, it sets a registry key (`HKCU\Software\Microsoft\DirectX\UserGpuPreferences`) to tell Windows to run the Java runtime on your high-performance GPU. On Linux, it uses the `DRI_PRIME=1` environment variable.
 - **Safe Auto-Updates** — RevoMC checks GitHub for launcher updates and safely installs them by downloading to a temporary directory and running a smoke-test on the new binary. If the new binary is missing libraries or corrupt, the update automatically aborts without breaking your currently installed version.
 - Mod downloads use the [Modrinth](https://modrinth.com) API. Occasionally their servers may drop a connection mid-download — if this happens just hit **Install / Update** again to retry.

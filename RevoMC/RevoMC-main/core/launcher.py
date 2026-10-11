@@ -8,6 +8,7 @@ import json
 from core.auth import CLIENT_ID
 import subprocess
 import platform
+import shlex
 from pathlib import Path
 from typing import Callable
 
@@ -106,11 +107,20 @@ def launch(
     auth_data: dict | None = None,
     use_dgpu: bool = False,
     game_dir: Path | None = None,
+    offline_uuid: str | None = None,
+    java_args: str = "",
+    performance_boost: bool = True,
 ) -> subprocess.Popen:
     if profile_type not in {"vanilla", "fabric"}:
         raise ValueError(f"Unsupported Minecraft profile type: {profile_type}")
     if profile_type == "fabric" and not fabric_profile_id:
         raise ValueError("Fabric profile ID missing.")
+    try:
+        user_java_args = shlex.split(java_args)
+    except ValueError as exc:
+        raise ValueError(f"Invalid profile Java arguments: {exc}") from exc
+    if any(arg in {"-cp", "-classpath", "-jar"} for arg in user_java_args):
+        raise ValueError("Profile Java arguments cannot override the game classpath.")
 
     base = get_launcher_dir()
     game_dir = game_dir or get_minecraft_dir()
@@ -171,7 +181,7 @@ def launch(
         "${game_directory}": str(game_dir),
         "${assets_root}": str(assets_dir),
         "${assets_index_name}": asset_index_id,
-        "${auth_uuid}": auth_data["id"] if auth_data else "00000000-0000-0000-0000-000000000000",
+        "${auth_uuid}": auth_data["id"] if auth_data else (offline_uuid or "00000000-0000-0000-0000-000000000000"),
         "${auth_access_token}": auth_data["access_token"] if auth_data else "0",
         "${user_type}": "msa" if auth_data else "legacy",
         "${version_type}": "release",
@@ -201,7 +211,7 @@ def launch(
             "--assetIndex",
             asset_index_id,
             "--uuid",
-            auth_data["id"] if auth_data else "00000000-0000-0000-0000-000000000000",
+            auth_data["id"] if auth_data else (offline_uuid or "00000000-0000-0000-0000-000000000000"),
             "--accessToken",
             auth_data["access_token"] if auth_data else "0",
             "--userType",
@@ -217,11 +227,10 @@ def launch(
         *extra_mac,
         f"-Xmx{ram_gb}G",
         f"-Xms{max(1, ram_gb // 2)}G",
-        "-XX:+UseG1GC",
-        "-XX:+ParallelRefProcEnabled",
-        "-XX:MaxGCPauseMillis=200",
+        *(["-XX:+UseG1GC", "-XX:+ParallelRefProcEnabled", "-XX:MaxGCPauseMillis=200"] if performance_boost else []),
         f"-Djava.library.path={natives_path}",
         f"-Djna.tmpdir={natives_path}",
+        *user_java_args,
         *extra_jvm,
         "-cp",
         classpath,

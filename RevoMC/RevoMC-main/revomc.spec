@@ -45,7 +45,10 @@ a = Analysis(
     [str(PROJECT_ROOT / "main.py")],
     pathex=[str(PROJECT_ROOT)],
     binaries=[],
-    datas=auto_datas,
+    datas=[
+        *auto_datas,
+        (str(PROJECT_ROOT / "assets" / "Minecraft.jpg"), "assets"),
+    ],
     hiddenimports=[
         # Core app modules — explicit so PyInstaller never misses them
         # even if the import chain gets refactored.
