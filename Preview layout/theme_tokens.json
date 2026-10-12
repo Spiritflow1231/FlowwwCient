@@ -1,0 +1,45 @@
+{
+  "name": "flowwwclient-glass",
+  "window": { "default": [1360, 820], "min": [1040, 660] },
+  "background": {
+    "image": "assets/bg.jpg",
+    "fit": "cover",
+    "overlay": "#05010F",
+    "overlay_alpha": 0.30
+  },
+  "colors": {
+    "panel": "#0D0B1A",
+    "panel_alt": "#14112A",
+    "row_hover": "#1C1838",
+    "border": "#2A2745",
+    "border_alpha": 0.08,
+    "text": "#F4F3FA",
+    "text_muted": "#9A97B5",
+    "accent": "#E63946",
+    "accent_dark": "#C22F3B",
+    "enabled": "#1FA86A",
+    "disabled_outline": "#E0525F",
+    "link": "#4DA3FF",
+    "warning": "#F0A030",
+    "danger": "#E0525F"
+  },
+  "radius": { "panel": 14, "card": 12, "button": 10, "chip": 8, "input": 10, "tile": 10 },
+  "spacing": [4, 8, 12, 16, 24],
+  "sizes": {
+    "button": 40,
+    "button_primary": 48,
+    "row": 76,
+    "row_icon": 48,
+    "profile_card": 80,
+    "sidebar_item": 40,
+    "skin_render_min": [300, 420],
+    "client_mod_card": [190, 140]
+  },
+  "motion": {
+    "page_ms": 180,
+    "hover_ms": 120,
+    "row_stagger_ms": 30,
+    "row_stagger_max_rows": 8,
+    "easing": "ease-out"
+  }
+}

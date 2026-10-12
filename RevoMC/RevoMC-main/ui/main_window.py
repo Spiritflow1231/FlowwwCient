@@ -24,7 +24,7 @@ import re
 import queue
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageOps
 import customtkinter as ctk
 from tkinter import TclError, filedialog, messagebox, simpledialog
 
@@ -34,8 +34,15 @@ import core.modrinth as modrinth
 import core.profiles as profile_store
 import core.accounts as account_store
 import core.skins as skin_store
+from core import skin_render
 from core.skins import validate_cosmetic_image
-from ui.theme import apply_customtkinter_palette, get_theme
+from ui.motion import Motion
+from ui.overlay import OverlayDialog
+from ui.stage import HeroStage, default_steve
+from ui.theme import (
+    DEFAULT_THEME, apply_customtkinter_palette, color_map, get_theme,
+    is_light, normalize_theme_name, retheme_widget_tree,
+)
 from core.installer import (
     fetch_release_versions,
     fetch_fabric_versions,
@@ -52,11 +59,11 @@ from core.java_manager import get_required_java_version
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-apply_customtkinter_palette()
 
 # Colour tokens — loaded from the active theme at module level (defaults).
 # MainWindow.__init__ reloads from config and _apply_theme() updates live.
-_t = get_theme(config.load().get("theme", "overworld"))
+_t = get_theme(config.load().get("theme", DEFAULT_THEME))
+apply_customtkinter_palette(_t)
 BG_PRIMARY   = _t["BG_PRIMARY"]
 BG_SECONDARY = _t["BG_SECONDARY"]
 BG_CONSOLE   = _t["BG_CONSOLE"]
@@ -71,6 +78,7 @@ MS_BLUE_DARK = _t["MS_BLUE_DARK"]
 TEXT_FG      = _t["TEXT_FG"]
 TEXT_MUTED   = _t["TEXT_MUTED"]
 TEXT_LABEL   = _t["TEXT_LABEL"]
+ACCENT_TEXT  = _t["ACCENT_TEXT"]
 _ICON_WORKERS = ThreadPoolExecutor(max_workers=4, thread_name_prefix="project-icons")
 
 
@@ -345,7 +353,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
             width=82,
             height=38,
             fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
+            text_color=self.theme["ACCENT_TEXT"],
             hover_color=self.theme["ACCENT_DARK"],
             command=self._on_search,
         )
@@ -384,7 +392,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
             text="Installed",
             width=100,
             fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
+            text_color=self.theme["ACCENT_TEXT"],
             command=lambda: self._select_tab("Installed"),
         )
         self.installed_btn.pack(side="left", padx=(0, 8))
@@ -412,7 +420,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
         self.refresh_content_btn.pack(side="left", padx=(0, 6))
         self.import_content_btn = ctk.CTkButton(
             tab_actions, text="Import file", width=100,
-            fg_color=self.theme["ACCENT"], text_color=self.theme["BG_PRIMARY"],
+            fg_color=self.theme["ACCENT"], text_color=self.theme["ACCENT_TEXT"],
             hover_color=self.theme["ACCENT_DARK"],
             command=self._import_local_content,
         )
@@ -495,7 +503,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
                 button, self.theme["ACCENT"] if active else "transparent"
             )
             button.configure(
-                text_color=self.theme["BG_PRIMARY"] if active else self.theme["TEXT_FG"]
+                text_color=self.theme["ACCENT_TEXT"] if active else self.theme["TEXT_FG"]
             )
 
         self._refresh_content()
@@ -505,11 +513,11 @@ class ProfileEditorWindow(ctk.CTkFrame):
 
         self.installed_btn.configure(
             fg_color=self.theme["ACCENT"] if tab == "Installed" else "transparent",
-            text_color=self.theme["BG_PRIMARY"] if tab == "Installed" else self.theme["TEXT_FG"],
+            text_color=self.theme["ACCENT_TEXT"] if tab == "Installed" else self.theme["TEXT_FG"],
         )
         self.browse_btn.configure(
             fg_color=self.theme["ACCENT"] if tab == "Browse" else "transparent",
-            text_color=self.theme["BG_PRIMARY"] if tab == "Browse" else self.theme["TEXT_FG"],
+            text_color=self.theme["ACCENT_TEXT"] if tab == "Browse" else self.theme["TEXT_FG"],
         )
 
         self._refresh_content()
@@ -526,7 +534,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
         )
         self.browse_btn.configure(
             fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
+            text_color=self.theme["ACCENT_TEXT"],
         )
         self._search_projects()
 
@@ -695,7 +703,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
 
         ctk.CTkButton(
             self.results, text="Save Changes",
-            fg_color=self.theme["ACCENT"], text_color=self.theme["BG_PRIMARY"],
+            fg_color=self.theme["ACCENT"], text_color=self.theme["ACCENT_TEXT"],
             hover_color=self.theme["ACCENT_DARK"], command=save_overview,
         ).pack(anchor="w", padx=12, pady=(4, 16))
 
@@ -1057,7 +1065,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
                 fg_color=self.theme["ACCENT"] if enabled else "transparent",
                 border_width=0 if enabled else 1,
                 border_color=self.theme["BORDER_COL"],
-                text_color=self.theme["BG_PRIMARY"] if enabled else self.theme["TEXT_FG"],
+                text_color=self.theme["ACCENT_TEXT"] if enabled else self.theme["TEXT_FG"],
                 hover_color=self.theme["ACCENT_DARK"],
                 command=lambda r=record: self._toggle_mod(r),
             )
@@ -1101,7 +1109,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
             text="Select profile",
             width=104,
             fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
+            text_color=self.theme["ACCENT_TEXT"],
             hover_color=self.theme["ACCENT_DARK"],
             command=lambda p=profile: self._select_imported_profile(p),
         ).grid(row=0, column=1, rowspan=2, padx=(0, 8), pady=10)
@@ -1166,7 +1174,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
             fg_color=self.theme["ACCENT"] if state == "normal" else "transparent",
             border_width=0 if state == "normal" else 1,
             border_color=self.theme["BORDER_COL"],
-            text_color=self.theme["BG_PRIMARY"] if state == "normal" else self.theme["TEXT_MUTED"],
+            text_color=self.theme["ACCENT_TEXT"] if state == "normal" else self.theme["TEXT_MUTED"],
             hover_color=self.theme["ACCENT_DARK"],
             command=lambda p=project: self._install_project(p),
         )
@@ -1828,29 +1836,21 @@ class ProfileEditorWindow(ctk.CTkFrame):
         self.parent._leave_profile_editor()
 # ── New Profile Dialog ─────────────────────────────────────────────────────────
 
-class NewProfileDialog(ctk.CTkToplevel):
-    """Modal dialog for creating a new profile.  Mirrors the original QDialog."""
+class NewProfileDialog(OverlayDialog):
+    """Modal card for creating a new profile (slides up over the launcher)."""
 
     def __init__(self, parent, all_versions: list[str], fabric_versions: list[str],
                  existing_profile_names: set[str] | None = None):
-        super().__init__(parent)
+        super().__init__(parent, 500, 640)
         self.parent = parent
         self.all_versions    = all_versions
         self.fabric_versions = fabric_versions
         self._existing_profile_names = existing_profile_names or set()
         self.result: dict | None = None
 
-        self.title("New Profile")
-        self.geometry("460x600")
-        self.resizable(False, True)
-        self.minsize(460, 480)
-        # Make modal
-        self.transient(parent)
-
         self._build()
         self.update_idletasks()
-        self.after(200, self.grab_set)
-        self.wait_window(self)  # blocks until dialog closes
+        self.wait_window(self)  # blocks until the card has closed
 
     # ── Dialog UI ─────────────────────────────────────────────────────────────
 
@@ -1864,7 +1864,7 @@ class NewProfileDialog(ctk.CTkToplevel):
                       border_width=1, border_color=BORDER_COL,
                       text_color=TEXT_FG,
                       command=self.destroy).pack(side="right", padx=(8, 0))
-        ctk.CTkButton(btn_row, text="Create", fg_color=GREEN, text_color=BG_PRIMARY,
+        ctk.CTkButton(btn_row, text="Create", fg_color=GREEN, text_color=ACCENT_TEXT,
                       hover_color=GREEN_DARK,
                       command=self._on_ok).pack(side="right")
 
@@ -1978,7 +1978,7 @@ class NewProfileDialog(ctk.CTkToplevel):
         self._selected_version = ver
         for btn in self._version_buttons:
             if btn.cget("text") == ver:
-                btn.configure(fg_color=GREEN, text_color=BG_PRIMARY)
+                btn.configure(fg_color=GREEN, text_color=ACCENT_TEXT)
             else:
                 btn.configure(fg_color="transparent", text_color=TEXT_FG)
 
@@ -2022,125 +2022,149 @@ class NewProfileDialog(ctk.CTkToplevel):
         self.destroy()
 
 
-# ── Settings Dialog ────────────────────────────────────────────────────────────
+# ── Settings page ──────────────────────────────────────────────────────────────
 
-class SettingsDialog(ctk.CTkToplevel):
-    """Modal dialog for launcher settings (theme, dGPU, etc.)."""
+class SettingsPage(ctk.CTkFrame):
+    """Launcher settings: theme, animations, performance, Java and folders."""
 
-    def __init__(self, parent, theme: dict, cfg: dict):
-        super().__init__(parent)
+    def __init__(self, parent):
+        super().__init__(parent.page_container, fg_color="transparent")
         self.parent = parent
-        self.theme = theme
-        self.cfg = cfg
-        self.result = False  # True if theme changed
-
-        self.title("Settings")
-        self.geometry("540x580")
-        self.minsize(480, 460)
-        self.resizable(True, True)
-        self.transient(parent)
-
+        self.theme = parent.theme
+        self.cfg = parent.cfg
         self._build()
-        self.update_idletasks()
-        self.after(200, self.grab_set)
-        self.wait_window(self)
+
+    def _card(self, body, title: str):
+        card = ctk.CTkFrame(
+            body, fg_color=self.theme["BG_SECONDARY"], corner_radius=14,
+            border_width=1, border_color=self.theme["BORDER_COL"],
+        )
+        card.pack(fill="x", pady=(0, 12))
+        _section_label(card, title).pack(anchor="w", padx=18, pady=(14, 8))
+        return card
 
     def _build(self):
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=20, pady=20)
-
-        _section_label(body, "Appearance").pack(anchor="w", pady=(0, 8))
+        body.pack(fill="both", expand=True)
         ctk.CTkLabel(
-            body, text="FlowwwClient Crimson  ·  Red, black and charcoal",
-            text_color=self.theme["TEXT_FG"], fg_color=self.theme["BG_SECONDARY"],
-            corner_radius=9, anchor="w",
-        ).pack(fill="x", pady=(0, 18), ipady=10, padx=2)
+            body, text="Settings", text_color=self.theme["TEXT_FG"],
+            font=ctk.CTkFont(size=24, weight="bold"),
+        ).pack(anchor="w", pady=(0, 12))
 
-        _section_label(body, "Performance").pack(anchor="w", pady=(0, 10))
+        appearance = self._card(body, "Appearance")
+        self.animations_var = ctk.BooleanVar(value=bool(self.cfg.get("animations", True)))
+        ctk.CTkCheckBox(
+            appearance, text="Animations (smooth page and popup transitions)",
+            variable=self.animations_var, command=self._on_animations,
+        ).pack(anchor="w", padx=18, pady=(0, 16))
+
+        performance = self._card(body, "Performance")
         self.dgpu_var = ctk.BooleanVar(value=self.cfg.get("use_dgpu", False))
         ctk.CTkCheckBox(
-            body, text="Run on Discrete GPU (NVIDIA/AMD)  —  Linux & Windows",
-            variable=self.dgpu_var,
-            text_color=self.theme["TEXT_FG"],
-            hover_color=self.theme["ACCENT_DARK"],
-            fg_color=self.theme["ACCENT"],
-        ).pack(anchor="w")
+            performance, text="Run on Discrete GPU (NVIDIA/AMD)  —  Linux & Windows",
+            variable=self.dgpu_var, command=self._on_dgpu,
+        ).pack(anchor="w", padx=18, pady=(0, 10))
+        ctk.CTkLabel(
+            performance,
+            text="Performance Boost installs FPS mods (Sodium, Lithium, …) and tuned Java flags. "
+                 "Krypton lowers the game's own networking overhead, but nothing in a launcher "
+                 "can fix a slow or unstable Wi-Fi connection.",
+            text_color=self.theme["TEXT_MUTED"], wraplength=640, justify="left", anchor="w",
+        ).pack(anchor="w", padx=18, pady=(0, 16))
 
-        _section_label(body, "Java runtime").pack(anchor="w", pady=(18, 6))
+        java = self._card(body, "Java runtime")
+        self.java_label = ctk.CTkLabel(
+            java, text="", text_color=self.theme["TEXT_MUTED"],
+            wraplength=640, justify="left", anchor="w",
+        )
+        self.java_label.pack(anchor="w", padx=18, pady=(0, 4))
+        ctk.CTkLabel(
+            java,
+            text=f"RAM is capped at {self.parent.max_ram_gb} GB to leave memory for the operating system.",
+            text_color=self.theme["TEXT_MUTED"], wraplength=640, justify="left", anchor="w",
+        ).pack(anchor="w", padx=18, pady=(0, 16))
+
+        self.directories = self._card(body, "Directories")
+        self.directory_rows = ctk.CTkFrame(self.directories, fg_color="transparent")
+        self.directory_rows.pack(fill="x", padx=18, pady=(0, 14))
+        self.on_show()
+
+    def on_show(self):
+        """Refresh the parts that depend on the selected profile."""
         profile = self.parent._current_profile()
         if profile:
             try:
                 java_version = get_required_java_version(profile.get("mc_version", ""))
                 from core.java_manager import is_runtime_installed
-                runtime_status = (
+                text = (
                     f"Java {java_version} bundled runtime is installed."
                     if is_runtime_installed(java_version)
                     else f"Java {java_version} will be downloaded on first launch."
                 )
             except (ValueError, TypeError) as exc:
-                runtime_status = f"Could not determine the required Java runtime: {exc}"
+                text = f"Could not determine the required Java runtime: {exc}"
         else:
-            runtime_status = "Select a profile to see its required Java runtime."
-        ctk.CTkLabel(
-            body, text=runtime_status, text_color=self.theme["TEXT_MUTED"],
-            wraplength=460, justify="left",
-        ).pack(anchor="w", pady=(0, 4))
-        ctk.CTkLabel(
-            body,
-            text=f"RAM is capped at {self.parent.max_ram_gb} GB to leave memory for the operating system.",
-            text_color=self.theme["TEXT_MUTED"],
-            wraplength=460, justify="left",
-        ).pack(anchor="w")
-
-        _section_label(body, "Directories").pack(anchor="w", pady=(18, 6))
+            text = "Select a profile to see its required Java runtime."
+        self.java_label.configure(text=text)
+        for widget in self.directory_rows.winfo_children():
+            widget.destroy()
         directories = [
             ("Launcher data", Path.home() / ".revomc"),
             ("Minecraft data", config.get_minecraft_dir()),
         ]
         if profile:
             try:
-                directories.append(("Selected profile instance", modrinth.profile_instance_dir(profile)))
+                directories.append(
+                    ("Selected profile instance", modrinth.profile_instance_dir(profile))
+                )
             except (OSError, ValueError, RuntimeError) as exc:
                 ctk.CTkLabel(
-                    body, text=f"Invalid profile directory: {exc}",
-                    text_color=self.theme["RED"], wraplength=460, justify="left",
+                    self.directory_rows, text=f"Invalid profile directory: {exc}",
+                    text_color=self.theme["RED"], wraplength=640, justify="left",
                 ).pack(anchor="w")
         for label, path in directories:
-            row = ctk.CTkFrame(body, fg_color="transparent")
+            row = ctk.CTkFrame(self.directory_rows, fg_color="transparent")
             row.pack(fill="x", pady=3)
             ctk.CTkLabel(
                 row, text=f"{label}: {path}", text_color=self.theme["TEXT_MUTED"],
-                anchor="w", justify="left", wraplength=350,
+                anchor="w", justify="left", wraplength=520,
             ).pack(side="left", fill="x", expand=True)
             ctk.CTkButton(
-                row, text="Open", width=58,
+                row, text="Open", width=64, height=30,
                 fg_color="transparent", border_width=1,
                 border_color=self.theme["BORDER_COL"],
                 text_color=self.theme["TEXT_FG"],
+                hover_color=self.theme["BG_CARD"],
                 command=lambda folder=path: self._open_directory(folder),
             ).pack(side="right", padx=(8, 0))
 
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(side="bottom", fill="x", padx=20, pady=12)
-        ctk.CTkButton(
-            btn_row, text="Cancel", fg_color="transparent",
-            border_width=1, border_color=self.theme["BORDER_COL"],
-            text_color=self.theme["TEXT_FG"],
-            command=self.destroy,
-        ).pack(side="right", padx=(8, 0))
-        ctk.CTkButton(
-            btn_row, text="Save", fg_color=self.theme["ACCENT"],
-            text_color=self.theme["BG_PRIMARY"],
-            hover_color=self.theme["ACCENT_DARK"],
-            command=self._on_save,
-        ).pack(side="right")
+    def _save(self) -> bool:
+        try:
+            config.save(self.cfg)
+        except OSError as exc:
+            messagebox.showerror(
+                "Could not save settings", str(exc), parent=self.winfo_toplevel()
+            )
+            return False
+        return True
+
+    def _on_animations(self):
+        enabled = bool(self.animations_var.get())
+        self.cfg["animations"] = enabled
+        self.parent.motion.enabled = enabled
+        self._save()
+
+    def _on_dgpu(self):
+        self.cfg["use_dgpu"] = bool(self.dgpu_var.get())
+        self._save()
 
     def _open_directory(self, path: Path):
+        parent = self.winfo_toplevel()
         if not path.is_dir():
             messagebox.showinfo(
                 "Directory not created",
                 f"This directory does not exist yet:\n{path}",
-                parent=self,
+                parent=parent,
             )
             return
         try:
@@ -2151,44 +2175,26 @@ class SettingsDialog(ctk.CTkToplevel):
             else:
                 subprocess.Popen(["xdg-open", str(path)])
         except (OSError, AttributeError) as exc:
-            messagebox.showerror("Could not open directory", str(exc), parent=self)
-
-    def _on_save(self):
-        old_theme = self.cfg.get("theme", "crimson")
-        self.cfg["theme"] = "crimson"
-        self.cfg["use_dgpu"] = self.dgpu_var.get()
-        try:
-            config.save(self.cfg)
-        except OSError as exc:
-            messagebox.showerror("Could not save settings", str(exc), parent=self)
-            return
-        if old_theme != "crimson":
-            self.result = True
-        self.destroy()
+            messagebox.showerror("Could not open directory", str(exc), parent=parent)
 
 
-class AccountsWindow(ctk.CTkToplevel):
+class AccountsPage(ctk.CTkFrame):
     """Account controls backed by the launcher's existing auth implementation."""
 
     def __init__(self, parent):
-        super().__init__(parent)
+        super().__init__(parent.page_container, fg_color="transparent")
         self.parent = parent
         self.theme = parent.theme
-        self.title("Accounts — FlowwwClient")
-        self.geometry("610x760")
-        self.minsize(500, 560)
-        self.configure(fg_color=self.theme["BG_PRIMARY"])
-        self.transient(parent)
         self._cosmetic_images = {}
         self._account_image_paths = {}
         try:
             self.accounts = account_store.load_accounts()
         except RuntimeError as exc:
             self.accounts = []
-            messagebox.showerror("Could not load accounts", str(exc), parent=self)
+            messagebox.showerror("Could not load accounts", str(exc), parent=self.winfo_toplevel())
 
         body = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=26, pady=24)
+        body.pack(fill="both", expand=True)
         ctk.CTkLabel(
             body,
             text="Accounts",
@@ -2208,8 +2214,8 @@ class AccountsWindow(ctk.CTkToplevel):
             values=["Offline", "Microsoft"],
             variable=parent.auth_mode_var,
             command=parent._on_auth_mode_changed,
-            selected_color=self.theme["ACCENT"],
-            selected_hover_color=self.theme["ACCENT_DARK"],
+            selected_color=self.theme["BORDER_COL"],
+            selected_hover_color=self.theme["BORDER_COL"],
             unselected_color=self.theme["BG_SECONDARY"],
         )
         self.mode_menu.pack(anchor="w", pady=(0, 18))
@@ -2303,23 +2309,33 @@ class AccountsWindow(ctk.CTkToplevel):
         ).pack(side="left", padx=(8, 0))
         ctk.CTkLabel(
             body,
-            text="Cosmetics saved here are local previews only. This launcher does not apply them to a Microsoft account or make them visible in-game.",
+            text="Offline skins and capes are visible on your own client (singleplayer, LAN, offline servers). "
+                 "Other players on online-mode servers will not see them. Microsoft accounts use their own skin.",
             text_color=self.theme["TEXT_MUTED"],
             wraplength=520,
             justify="left",
         ).pack(anchor="w", pady=(18, 8))
-        self._build_cosmetic_card(body, "skin", "Skin preview", (80, 80))
-        self._build_cosmetic_card(body, "cape", "Cape preview", (128, 64))
+        self._build_cosmetic_card(body, "skin", "Skin", (150, 200))
+        self._build_cosmetic_card(body, "cape", "Cape", (128, 64))
         self.skin_model = ctk.StringVar(value="classic")
         ctk.CTkSegmentedButton(
             body, values=["classic", "slim"], variable=self.skin_model,
             command=self._save_skin_model,
-            selected_color=self.theme["ACCENT"],
-            selected_hover_color=self.theme["ACCENT_DARK"],
+            selected_color=self.theme["BORDER_COL"],
+            selected_hover_color=self.theme["BORDER_COL"],
         ).pack(anchor="w", pady=(0, 12))
         self._refresh_offline_profiles()
         self._refresh_cosmetics()
         self._refresh_status()
+
+    def on_show(self):
+        """Called whenever the page becomes visible."""
+        try:
+            self.accounts = account_store.load_accounts()
+        except RuntimeError:
+            pass
+        self._refresh_offline_profiles()
+        self._refresh_cosmetics()
 
     def _build_cosmetic_card(self, parent, cosmetic: str, title: str, size: tuple[int, int]):
         card = ctk.CTkFrame(
@@ -2350,7 +2366,7 @@ class AccountsWindow(ctk.CTkToplevel):
         action_row.pack(fill="x", padx=14, pady=(0, 12))
         ctk.CTkButton(
             action_row, text="Import / replace", width=126,
-            fg_color=self.theme["ACCENT"], text_color=self.theme["BG_PRIMARY"],
+            fg_color=self.theme["ACCENT"], text_color=self.theme["ACCENT_TEXT"],
             hover_color=self.theme["ACCENT_DARK"],
             command=lambda kind=cosmetic: self._import_cosmetic(kind),
         ).pack(side="left")
@@ -2375,7 +2391,7 @@ class AccountsWindow(ctk.CTkToplevel):
                 config.save(self.parent.cfg)
             except OSError as exc:
                 profiles.remove(current)
-                messagebox.showerror("Could not save offline profile", str(exc), parent=self)
+                messagebox.showerror("Could not save offline profile", str(exc), parent=self.winfo_toplevel())
         values = [name for name in profiles if isinstance(name, str) and name.strip()]
         known = {account.get("username") for account in self.accounts}
         for name in values:
@@ -2398,7 +2414,7 @@ class AccountsWindow(ctk.CTkToplevel):
         try:
             account_store.save_accounts(self.accounts)
         except OSError as exc:
-            messagebox.showerror("Could not save accounts", str(exc), parent=self)
+            messagebox.showerror("Could not save accounts", str(exc), parent=self.winfo_toplevel())
             return False
         return True
 
@@ -2452,7 +2468,7 @@ class AccountsWindow(ctk.CTkToplevel):
             ).pack(side="right", padx=(4, 0), pady=5)
             ctk.CTkButton(
                 card, text="Select", width=62,
-                fg_color=self.theme["ACCENT"], text_color=self.theme["BG_PRIMARY"],
+                fg_color=self.theme["ACCENT"], text_color=self.theme["ACCENT_TEXT"],
                 hover_color=self.theme["ACCENT_DARK"],
                 command=lambda name=username: self._select_offline_profile(name),
             ).pack(side="right", padx=(4, 8), pady=5)
@@ -2470,7 +2486,7 @@ class AccountsWindow(ctk.CTkToplevel):
             self.parent.cfg["offline_profiles"] = previous
             self.parent.cfg["active_offline_profile"] = previous_active
             self.parent.cfg["username"] = previous_username
-            messagebox.showerror("Could not save offline profiles", str(exc), parent=self)
+            messagebox.showerror("Could not save offline profiles", str(exc), parent=self.winfo_toplevel())
             return False
         self.parent.username_var.set(selected or "")
         if selected and not any(item.get("username") == selected for item in self.accounts):
@@ -2494,19 +2510,19 @@ class AccountsWindow(ctk.CTkToplevel):
 
     def _add_offline_profile(self):
         name = simpledialog.askstring(
-            "Add offline profile", "Minecraft username:", parent=self
+            "Add offline profile", "Minecraft username:", parent=self.winfo_toplevel()
         )
         if name is None:
             return
         name = name.strip()
         if not re.fullmatch(r"[A-Za-z0-9_]{1,16}", name):
             messagebox.showerror(
-                "Invalid username", "Use 1–16 letters, numbers or underscores.", parent=self
+                "Invalid username", "Use 1–16 letters, numbers or underscores.", parent=self.winfo_toplevel()
             )
             return
         profiles = list(self.parent.cfg.get("offline_profiles", []))
         if any(existing.casefold() == name.casefold() for existing in profiles):
-            messagebox.showerror("Profile exists", "That offline profile already exists.", parent=self)
+            messagebox.showerror("Profile exists", "That offline profile already exists.", parent=self.winfo_toplevel())
             return
         profiles.append(name)
         self.accounts.append({
@@ -2525,18 +2541,18 @@ class AccountsWindow(ctk.CTkToplevel):
             return
         name = simpledialog.askstring(
             "Rename offline profile", "Minecraft username:",
-            initialvalue=old_name, parent=self,
+            initialvalue=old_name, parent=self.winfo_toplevel(),
         )
         if name is None:
             return
         name = name.strip()
         if not re.fullmatch(r"[A-Za-z0-9_]{1,16}", name):
             messagebox.showerror(
-                "Invalid username", "Use 1–16 letters, numbers or underscores.", parent=self
+                "Invalid username", "Use 1–16 letters, numbers or underscores.", parent=self.winfo_toplevel()
             )
             return
         if any(existing.casefold() == name.casefold() for existing in profiles if existing != old_name):
-            messagebox.showerror("Profile exists", "That offline profile already exists.", parent=self)
+            messagebox.showerror("Profile exists", "That offline profile already exists.", parent=self.winfo_toplevel())
             return
         profiles[profiles.index(old_name)] = name
         account = next(
@@ -2562,7 +2578,7 @@ class AccountsWindow(ctk.CTkToplevel):
         if name not in profiles:
             return
         if not messagebox.askyesno(
-            "Remove offline profile", f"Remove the local username '{name}'?", parent=self
+            "Remove offline profile", f"Remove the local username '{name}'?", parent=self.winfo_toplevel()
         ):
             return
         profiles.remove(name)
@@ -2600,7 +2616,7 @@ class AccountsWindow(ctk.CTkToplevel):
         account_id = account.get("uuid") if account else None
         if account and hasattr(self, "skin_model"):
             self.skin_model.set(account.get("skin_model", "classic"))
-        for cosmetic, size in (("skin", (80, 80)), ("cape", (128, 64))):
+        for cosmetic, size in (("skin", (150, 200)), ("cape", (128, 64))):
             preview = getattr(self, f"{cosmetic}_preview")
             state = getattr(self, f"{cosmetic}_state")
             path = None
@@ -2619,13 +2635,21 @@ class AccountsWindow(ctk.CTkToplevel):
                 validate_cosmetic_image(path, cosmetic)
                 with Image.open(path) as source:
                     image = source.convert("RGBA")
-                rendered = ctk.CTkImage(
-                    light_image=image, dark_image=image, size=size
-                )
+                if cosmetic == "skin":
+                    slim = bool(account and account.get("skin_model") == "slim")
+                    hero = skin_render.render_player(
+                        image, slim=slim, size=(size[0] * 2, size[1] * 2)
+                    ).image
+                    rendered = ctk.CTkImage(light_image=hero, dark_image=hero, size=size)
+                else:
+                    rendered = ctk.CTkImage(
+                        light_image=image, dark_image=image, size=size
+                    )
                 self._cosmetic_images[cosmetic] = rendered
                 preview.configure(image=rendered, text="")
                 state.configure(
-                    text=f"{path.name}\nSaved locally for {username}. Rendering in-game is not configured."
+                    text=f"{path.name}\nSaved for {username}. It is shown in-game on your own client "
+                         "(singleplayer, LAN, offline servers)."
                 )
             except (OSError, ValueError) as exc:
                 preview.configure(image=None, text="Invalid saved image")
@@ -2633,7 +2657,7 @@ class AccountsWindow(ctk.CTkToplevel):
 
     def _import_cosmetic(self, cosmetic: str):
         source_name = filedialog.askopenfilename(
-            parent=self, title=f"Import {cosmetic}",
+            parent=self.winfo_toplevel(), title=f"Import {cosmetic}",
             filetypes=[("PNG image", "*.png")],
         )
         if not source_name:
@@ -2654,18 +2678,19 @@ class AccountsWindow(ctk.CTkToplevel):
                 self.parent._refresh_home_skin()
             messagebox.showinfo(
                 f"{cosmetic.title()} saved",
-                f"Saved local {cosmetic} ({dimensions[0]} × {dimensions[1]}) for {username}. "
-                "The current launcher does not apply local cosmetics in-game.",
-                parent=self,
+                f"Saved {cosmetic} ({dimensions[0]} × {dimensions[1]}) for {username}. "
+                "It is applied when you launch a Fabric profile as this offline account. "
+                "Other players on online-mode servers will not see it.",
+                parent=self.winfo_toplevel(),
             )
         except (OSError, ValueError) as exc:
-            messagebox.showerror(f"Could not import {cosmetic}", str(exc), parent=self)
+            messagebox.showerror(f"Could not import {cosmetic}", str(exc), parent=self.winfo_toplevel())
 
     def _remove_cosmetic(self, cosmetic: str):
         if not messagebox.askyesno(
             f"Remove {cosmetic} preview",
             f"Remove the saved local {cosmetic} preview?",
-            parent=self,
+            parent=self.winfo_toplevel(),
         ):
             return
         username = self.parent.username_var.get().strip()
@@ -2679,7 +2704,7 @@ class AccountsWindow(ctk.CTkToplevel):
                 path = folder / f"{cosmetic}.png"
                 path.unlink(missing_ok=True)
             except (OSError, ValueError) as exc:
-                messagebox.showerror("Could not remove cosmetic", str(exc), parent=self)
+                messagebox.showerror("Could not remove cosmetic", str(exc), parent=self.winfo_toplevel())
                 return
         self._refresh_cosmetics()
         if cosmetic == "skin":
@@ -2694,6 +2719,8 @@ class AccountsWindow(ctk.CTkToplevel):
         if account:
             account["skin_model"] = model
             self._save_accounts()
+            self._refresh_cosmetics()
+            self.parent._refresh_home_skin()
 
     def _refresh_status(self):
         if not self.winfo_exists():
@@ -2750,11 +2777,17 @@ class MainWindow(ctk.CTk):
             instance_ids.add(profile["instance_id"])
         if profiles_changed:
             config.save(self.cfg)
-        self.theme            = get_theme(self.cfg.get("theme", "overworld"))
+        self.theme            = get_theme(self.cfg.get("theme", DEFAULT_THEME))
         self.all_versions: list[str]    = []
         self.fabric_versions: list[str] = []
         self.latest_fabric_loader_versions: dict[str, str] = {}
         self._busy            = False
+        self.motion           = Motion(
+            self,
+            enabled=bool(self.cfg.get("animations", True)),
+            is_busy=lambda: self._busy,
+        )
+        self._current_page    = "home"
         self._color_animations = {}
         self._selected_profile_idx: int = -1
         self._ms_account: dict | None = None
@@ -2781,6 +2814,14 @@ class MainWindow(ctk.CTk):
         self.geometry("1360x820")
         self.minsize(1040, 660)
         self.configure(fg_color=BG_PRIMARY)
+        with Image.open(_resource_path("assets/bg.jpg")) as source:
+            self._background_source = source.convert("RGB")
+        self._background_image = None
+        self._background_resize_job = None
+        self._background_label = ctk.CTkLabel(self, text="", corner_radius=0)
+        self._background_label.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self._background_label.lower()
+        self.bind("<Configure>", self._schedule_background_render, add="+")
 
         root = ctk.CTkFrame(self, fg_color="transparent")
         root.pack(fill="both", expand=True, padx=24, pady=18)
@@ -2882,10 +2923,10 @@ class MainWindow(ctk.CTk):
             variable=self.auth_mode_var,
             command=self._on_auth_mode_changed,
             font=ctk.CTkFont(size=11),
-            selected_color=GREEN,
-            selected_hover_color=GREEN_DARK,
+            selected_color=BORDER_COL,
+            selected_hover_color=BORDER_COL,
             unselected_color=BG_SECONDARY,
-            unselected_hover_color="#1e293b",
+            unselected_hover_color=BG_CARD,
         )
         self.auth_mode_menu.pack(side="left")
         self.auth_mode_var.set(self.cfg.get("auth_mode", "offline").title())
@@ -2904,7 +2945,7 @@ class MainWindow(ctk.CTk):
         self.ms_signin_btn = ctk.CTkButton(
             self.ms_panel, text="  Sign in with Microsoft",
             fg_color=MS_BLUE, hover_color=MS_BLUE_DARK,
-            text_color="#ffffff",
+            text_color=ACCENT_TEXT,
             font=ctk.CTkFont(size=12, weight="bold"),
             width=220, height=32,
             command=self._on_ms_signin,
@@ -2941,10 +2982,44 @@ class MainWindow(ctk.CTk):
             "profiles": self.left_panel,
             "console": self.right_panel,
         }
+        self._lazy_pages = {"accounts": AccountsPage, "settings": SettingsPage}
         self._global_navigation_widgets = [
             (widget, widget.pack_info()) for widget in navigation.winfo_children()
         ]
         self._show_page("home")
+        self.after(0, self._render_background)
+
+    def _schedule_background_render(self, event):
+        if event.widget is not self:
+            return
+        if self._background_resize_job:
+            self.after_cancel(self._background_resize_job)
+        self._background_resize_job = self.after(150, self._render_background)
+
+    def _render_background(self):
+        self._background_resize_job = None
+        width, height = self.winfo_width(), self.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+        background = ImageOps.fit(
+            self._background_source,
+            (width, height),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
+        if is_light(self.cfg.get("theme", DEFAULT_THEME)):
+            # wash the gradient out into a soft lavender so dark text stays readable
+            wash = Image.new("RGB", background.size, (238, 234, 252))
+            background = Image.blend(ImageEnhance.Color(background).enhance(1.35), wash, 0.68)
+        else:
+            background = ImageEnhance.Brightness(background).enhance(0.70)
+        self._background_image = ctk.CTkImage(
+            light_image=background,
+            dark_image=background,
+            size=(width, height),
+        )
+        self._background_label.configure(image=self._background_image)
+        self._background_label.lower()
 
     def _show_profile_editor_navigation(self, editor):
         for widget, _pack_info in self._global_navigation_widgets:
@@ -3034,7 +3109,7 @@ class MainWindow(ctk.CTk):
                         self.theme["ACCENT"] if key == editor.category else "transparent"
                     ),
                     text_color=(
-                        self.theme["BG_PRIMARY"] if key == editor.category
+                        self.theme["ACCENT_TEXT"] if key == editor.category
                         else self.theme["TEXT_FG"]
                     ),
                     hover_color=self.theme["ACCENT_DARK"],
@@ -3060,12 +3135,13 @@ class MainWindow(ctk.CTk):
             self._profile_editor.destroy()
         for frame in self._pages.values():
             frame.grid_forget()
+            frame.place_forget()
         editor = ProfileEditorWindow(self, profile, initial_category)
         self._profile_editor = editor
         self._pages["profile_editor"] = editor
-        editor.grid(row=0, column=0, sticky="nsew")
         self._current_page = "profile_editor"
         self._set_active_navigation("profile_editor")
+        self.motion.slide_up(editor, key="page")
 
     def _leave_profile_editor(self):
         editor = self._profile_editor
@@ -3082,20 +3158,21 @@ class MainWindow(ctk.CTk):
             return
         page = "home" if page == "dashboard" else page
         if page not in self._pages:
-            return
-        for frame in self._pages.values():
-            frame.grid_forget()
-        self._pages[page].grid(row=0, column=0, sticky="nsew")
-        self._pages[page].grid_configure(padx=(6, 0))
-        for step in range(1, 7):
-            self.after(
-                step * 20,
-                lambda current=step, widget=self._pages[page]:
-                widget.grid_configure(padx=(max(0, 6 - current), 0))
-                if widget.winfo_exists() and not self._busy else None,
-            )
+            factory = getattr(self, "_lazy_pages", {}).get(page)
+            if factory is None:
+                return
+            self._pages[page] = factory(self)
+        target = self._pages[page]
+        for name, frame in self._pages.items():
+            if frame is not target:
+                frame.grid_forget()
+                frame.place_forget()
         self._current_page = page
         self._set_active_navigation(page)
+        refresh = getattr(target, "on_show", None)
+        if callable(refresh):
+            refresh()
+        self.motion.slide_up(target, distance=24, duration_ms=220, key="page")
 
     def _animate_widget_color(self, widget, target: str, duration_ms: int = 120):
         if self._busy:
@@ -3154,7 +3231,7 @@ class MainWindow(ctk.CTk):
             )
             button.configure(
                 hover_color=self.theme["ACCENT_DARK"] if active else self.theme["BG_PRIMARY"],
-                text_color=self.theme["BG_PRIMARY"] if active else self.theme["TEXT_FG"],
+                text_color=self.theme["ACCENT_TEXT"] if active else self.theme["TEXT_FG"],
             )
 
     def _open_profile_content(self, category):
@@ -3169,12 +3246,10 @@ class MainWindow(ctk.CTk):
         self._open_profile_editor(profile, initial_category=category)
 
     def _open_accounts(self):
-        self._set_active_navigation("accounts")
-        AccountsWindow(self)
+        self._show_page("accounts")
 
     def _open_settings_page(self):
-        self._set_active_navigation("settings")
-        self._on_open_settings()
+        self._show_page("settings")
 
     def _build_left(self, parent):
         left = ctk.CTkFrame(parent, fg_color="transparent")
@@ -3184,12 +3259,12 @@ class MainWindow(ctk.CTk):
         ph = ctk.CTkFrame(left, fg_color="transparent")
         ph.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         ctk.CTkLabel(
-            ph, text="Your profiles", text_color=TEXT_FG,
+            ph, text="Profiles", text_color=TEXT_FG,
             font=ctk.CTkFont(size=24, weight="bold"),
         ).pack(side="left")
         self.new_btn = ctk.CTkButton(
             ph, text="+ New profile", width=125,
-            fg_color=GREEN, text_color=BG_PRIMARY, hover_color=GREEN_DARK,
+            fg_color=GREEN, text_color=ACCENT_TEXT, hover_color=GREEN_DARK,
             command=self._on_new_profile,
         )
         self.new_btn.pack(side="right")
@@ -3224,7 +3299,7 @@ class MainWindow(ctk.CTk):
         header = ctk.CTkFrame(right, fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         ctk.CTkLabel(
-            header, text="Console / Logs", text_color=TEXT_FG,
+            header, text="Logs", text_color=TEXT_FG,
             font=ctk.CTkFont(size=24, weight="bold"),
         ).pack(side="left")
         self.console_status = ctk.CTkLabel(
@@ -3243,75 +3318,130 @@ class MainWindow(ctk.CTk):
 
     def _build_home(self, parent):
         self.home_panel = ctk.CTkFrame(parent, fg_color="transparent")
-        self.home_panel.grid_columnconfigure(0, weight=1, uniform="home")
-        self.home_panel.grid_columnconfigure(1, weight=1, uniform="home")
-        self.home_panel.grid_rowconfigure(1, weight=1)
-
-        hero = ctk.CTkFrame(
-            self.home_panel, fg_color=BG_CARD, corner_radius=16,
-            border_width=1, border_color=BORDER_COL,
-        )
-        hero.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
-        hero.grid_columnconfigure(0, weight=0)
-        hero.grid_columnconfigure(1, weight=1)
-        hero.grid_columnconfigure(2, weight=1)
-
-        artwork = ctk.CTkFrame(
-            hero, fg_color=BG_PRIMARY, corner_radius=14,
-        )
-        artwork.grid(row=0, column=0, sticky="nsew", padx=(14, 8), pady=14)
-        self.home_brand_image = ctk.CTkImage(
-            light_image=self.brand_art, dark_image=self.brand_art, size=(190, 190),
-        )
+        panel = self.home_panel
+        panel.grid_columnconfigure(0, weight=3, uniform="home", minsize=250)
+        panel.grid_columnconfigure(1, weight=4, uniform="home", minsize=340)
+        panel.grid_columnconfigure(2, weight=3, uniform="home", minsize=250)
+        panel.grid_rowconfigure(1, weight=1)
         ctk.CTkLabel(
-            artwork, text="", image=self.home_brand_image,
-        ).pack(expand=True, padx=8, pady=8)
+            panel, text="Play", text_color=TEXT_FG,
+            font=ctk.CTkFont(size=24, weight="bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
 
-        welcome = ctk.CTkFrame(hero, fg_color="transparent")
-        welcome.grid(row=0, column=1, sticky="nsew", padx=(12, 10), pady=22)
-        ctk.CTkLabel(
-            welcome, text="YOUR MINECRAFT, YOUR WAY", text_color=GREEN,
-            font=ctk.CTkFont(size=10, weight="bold"),
-        ).pack(anchor="w", pady=(4, 8))
-        ctk.CTkLabel(
-            welcome, text="Ready to play?", text_color=TEXT_FG,
-            font=ctk.CTkFont(size=23, weight="bold"),
-        ).pack(anchor="w", pady=(0, 14))
+        def glass(**options):
+            return ctk.CTkFrame(
+                panel, fg_color=BG_SECONDARY, corner_radius=16,
+                border_width=1, border_color=BORDER_COL, **options,
+            )
+
+        # ── left: profile + quick access ─────────────────────────────────────
+        left = glass()
+        left.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        left.grid_columnconfigure(0, weight=1)
+        _section_label(left, "Active profile").grid(
+            row=0, column=0, sticky="w", padx=18, pady=(18, 6))
         self.home_profile_name = ctk.CTkLabel(
-            welcome, text="Select a profile to get started", text_color=TEXT_FG,
-            font=ctk.CTkFont(size=17, weight="bold"), anchor="w",
+            left, text="Select a profile to get started", text_color=TEXT_FG,
+            font=ctk.CTkFont(size=18, weight="bold"), anchor="w", justify="left",
+            wraplength=230,
         )
-        self.home_profile_name.pack(anchor="w", fill="x")
+        self.home_profile_name.grid(row=1, column=0, sticky="ew", padx=18)
         self.home_profile_details = ctk.CTkLabel(
-            welcome, text="", text_color=TEXT_MUTED, font=ctk.CTkFont(size=12),
-            anchor="w", justify="left", wraplength=260,
+            left, text="", text_color=TEXT_MUTED, font=ctk.CTkFont(size=12),
+            anchor="w", justify="left", wraplength=230,
         )
-        self.home_profile_details.pack(anchor="w", fill="x", pady=(5, 16))
+        self.home_profile_details.grid(row=2, column=0, sticky="ew", padx=18, pady=(4, 8))
+        self.home_status_badge = ctk.CTkLabel(
+            left, text="", corner_radius=8, height=22, width=120,
+            fg_color=self.theme["NEUTRAL"], text_color=ACCENT_TEXT,
+            font=ctk.CTkFont(size=10, weight="bold"),
+        )
+        self.home_status_badge.grid(row=3, column=0, sticky="w", padx=18, pady=(0, 12))
+        self.home_profile_menu = ctk.CTkOptionMenu(
+            left, values=["No profiles"], height=36,
+            fg_color=BG_PRIMARY, text_color=TEXT_FG,
+            button_color=self.theme["ACCENT"],
+            button_hover_color=self.theme["ACCENT_DARK"],
+            command=self._select_home_profile,
+        )
+        self.home_profile_menu.grid(row=4, column=0, sticky="ew", padx=18, pady=(0, 6))
+        self.home_profile_count = ctk.CTkLabel(
+            left, text="", text_color=TEXT_MUTED, font=ctk.CTkFont(size=11), anchor="w",
+        )
+        self.home_profile_count.grid(row=5, column=0, sticky="ew", padx=18, pady=(0, 10))
+        ctk.CTkFrame(left, height=1, fg_color=BORDER_COL).grid(
+            row=6, column=0, sticky="ew", padx=18, pady=(0, 12))
+        _section_label(left, "Quick access").grid(
+            row=7, column=0, sticky="w", padx=18, pady=(0, 8))
+        action_items = (
+            ("Edit profile", self._on_edit_profile),
+            ("Browse mods", lambda: self._open_profile_content("mods")),
+            ("Settings", self._open_settings_page),
+            ("View logs", lambda: self._show_page("console")),
+        )
+        for row, (title, command) in enumerate(action_items, start=8):
+            button = ctk.CTkButton(
+                left, text=title, anchor="w", height=38, corner_radius=10,
+                fg_color=BG_CARD, hover_color=BORDER_COL, text_color=TEXT_FG,
+                border_width=1, border_color=BORDER_COL,
+                font=ctk.CTkFont(size=12, weight="bold"), command=command,
+            )
+            button.grid(row=row, column=0, sticky="ew", padx=18, pady=3)
         ctk.CTkButton(
-            welcome, text="Manage profiles", height=36,
-            fg_color="transparent", border_width=1, border_color=BORDER_COL,
-            text_color=TEXT_FG, hover_color=BG_SECONDARY,
-            command=lambda: self._show_page("profiles"),
-        ).pack(anchor="w")
+            left, text="+  New profile", height=38, corner_radius=10,
+            command=self._on_new_profile,
+        ).grid(row=12, column=0, sticky="ew", padx=18, pady=(10, 18))
+        left.grid_rowconfigure(13, weight=1)
 
-        launch_card = ctk.CTkFrame(
-            hero, fg_color=BG_SECONDARY, corner_radius=14,
-            border_width=1, border_color=BORDER_COL,
+        # ── centre: hero stage with the PLAY button below ────────────────────
+        centre = glass()
+        centre.grid(row=1, column=1, sticky="nsew", padx=8)
+        centre.grid_columnconfigure(0, weight=1)
+        centre.grid_rowconfigure(0, weight=1)
+        scene = None
+        try:
+            with Image.open(_resource_path("assets/stage_bg.jpg")) as source:
+                scene = source.convert("RGB")
+        except OSError:
+            scene = None
+        self.stage = HeroStage(
+            centre, self.theme, motion=self.motion,
+            on_create_account=lambda: self._show_page("accounts"),
+            scene=scene,
         )
-        launch_card.grid(row=0, column=2, sticky="nsew", padx=(8, 14), pady=14)
+        self.stage.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 8))
+        self.play_btn = ctk.CTkButton(
+            centre, text="▶  PLAY", height=52, corner_radius=12, width=320,
+            fg_color=self.theme["ACCENT"], text_color=ACCENT_TEXT,
+            hover_color=self.theme["ACCENT_DARK"],
+            font=ctk.CTkFont(size=16, weight="bold"),
+            command=self._on_play_btn,
+        )
+        self.play_btn.grid(row=1, column=0, pady=(0, 18))
+        centre.bind(
+            "<Configure>",
+            lambda event: self.play_btn.configure(
+                width=max(180, min(360, event.width - 56))
+            ),
+            add="+",
+        )
+
+        # ── right: memory, progress, status ──────────────────────────────────
+        launch_card = glass()
+        launch_card.grid(row=1, column=2, sticky="nsew", padx=(8, 0))
         launch_card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            launch_card, text="Launch game", text_color=TEXT_FG,
+            launch_card, text="Launch settings", text_color=TEXT_FG,
             font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(18, 12))
+        ).grid(row=0, column=0, sticky="w", padx=18, pady=(18, 6))
         self.home_account_label = ctk.CTkLabel(
             launch_card, text="", text_color=TEXT_MUTED, anchor="w",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=12), wraplength=230, justify="left",
         )
-        self.home_account_label.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 12))
+        self.home_account_label.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 16))
         self.ram_label_lbl = ctk.CTkLabel(
             launch_card, text=f"Memory allocation · {self.cfg.get('ram_gb', 2)} GB",
-            text_color=TEXT_MUTED, anchor="w",
+            text_color=TEXT_FG, anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
         )
         self.ram_label_lbl.grid(row=2, column=0, sticky="ew", padx=18)
@@ -3331,118 +3461,35 @@ class MainWindow(ctk.CTk):
             launch_card, from_=1, to=self.max_ram_gb,
             number_of_steps=max(1, self.max_ram_gb - 1),
             variable=self.ram_var, command=self._on_ram_changed,
-            progress_color=GREEN, fg_color=BG_PRIMARY,
+            progress_color=GREEN, fg_color=BORDER_COL,
             button_color=GREEN, button_hover_color=GREEN_DARK,
         )
-        self.ram_slider.grid(row=3, column=0, sticky="ew", padx=18, pady=(4, 16))
-        self.play_btn = ctk.CTkButton(
-            launch_card, text="▶  PLAY",
-            corner_radius=11, fg_color=GREEN, text_color=BG_PRIMARY,
-            hover_color=GREEN_DARK, font=ctk.CTkFont(size=16, weight="bold"),
-            height=48, command=self._on_play_btn,
-        )
-        self.play_btn.grid(row=4, column=0, sticky="ew", padx=18, pady=(0, 14))
+        self.ram_slider.grid(row=3, column=0, sticky="ew", padx=18, pady=(6, 22))
+        ctk.CTkLabel(
+            launch_card, text="Progress", text_color=TEXT_FG, anchor="w",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).grid(row=4, column=0, sticky="ew", padx=18)
         self.progress_bar = ctk.CTkProgressBar(
-            launch_card, progress_color=GREEN, fg_color=BG_PRIMARY,
+            launch_card, progress_color=GREEN, fg_color=BORDER_COL,
             height=8, corner_radius=6,
         )
         self.progress_bar.set(0)
-        self.progress_bar.grid(row=5, column=0, sticky="ew", padx=18, pady=(0, 8))
+        self.progress_bar.grid(row=5, column=0, sticky="ew", padx=18, pady=(8, 8))
         self.status_lbl = ctk.CTkLabel(
             launch_card, text="Ready to launch Minecraft.",
             text_color=TEXT_MUTED, font=ctk.CTkFont(size=12),
-            anchor="w", justify="left", wraplength=420,
+            anchor="w", justify="left", wraplength=230,
         )
         self.status_lbl.grid(row=6, column=0, sticky="ew", padx=18, pady=(0, 18))
 
-        profiles_card = ctk.CTkFrame(
-            self.home_panel, fg_color=BG_SECONDARY, corner_radius=14,
-            border_width=1, border_color=BORDER_COL,
-        )
-        profiles_card.grid(row=1, column=0, sticky="nsew", padx=(0, 6))
-        profiles_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            profiles_card, text="Profiles", text_color=TEXT_FG,
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(18, 8))
-        self.home_profile_count = ctk.CTkLabel(
-            profiles_card, text="", text_color=TEXT_MUTED,
-            font=ctk.CTkFont(size=12), anchor="w",
-        )
-        self.home_profile_count.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 14))
-        ctk.CTkButton(
-            profiles_card, text="+  Create a profile", height=42,
-            fg_color=GREEN, text_color=BG_PRIMARY, hover_color=GREEN_DARK,
-            command=self._on_new_profile,
-        ).grid(row=2, column=0, sticky="ew", padx=18, pady=(0, 18))
-        self._bind_card_motion(profiles_card)
-
-        actions = ctk.CTkFrame(
-            self.home_panel, fg_color=BG_SECONDARY, corner_radius=14,
-            border_width=1, border_color=BORDER_COL,
-        )
-        actions.grid(row=1, column=1, sticky="nsew", padx=(6, 0))
-        actions.grid_columnconfigure(0, weight=1)
-        self._bind_card_motion(actions)
-        ctk.CTkLabel(
-            actions, text="Play", text_color=TEXT_FG,
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(18, 8))
-        self.home_skin_label = ctk.CTkLabel(
-            actions,
-            text="",
-            width=116,
-            height=174,
-            fg_color=BG_PRIMARY,
-            corner_radius=10,
-        )
-        self.home_skin_label.grid(row=1, column=0, padx=18, pady=(0, 10))
-        ctk.CTkLabel(
-            actions, text="Quick access", text_color=TEXT_FG,
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=2, column=0, sticky="w", padx=18, pady=(2, 8))
-        action_items = (
-            ("Edit profile", self._on_edit_profile),
-            ("Browse mods", lambda: self._open_profile_content("mods")),
-            ("Settings", self._open_settings_page),
-        )
-        for row, (title, command) in enumerate(action_items, start=3):
-            button = ctk.CTkButton(
-                actions, text=title, anchor="w",
-                height=42, corner_radius=10, fg_color=BG_CARD,
-                hover_color=BG_PRIMARY, text_color=TEXT_FG,
-                font=ctk.CTkFont(size=12, weight="bold"), command=command,
-            )
-            button.grid(row=row, column=0, sticky="ew", padx=14, pady=4)
-            button.bind(
-                "<Enter>",
-                lambda _event, widget=button:
-                self._animate_widget_color(widget, BG_PRIMARY),
-                add="+",
-            )
-            button.bind(
-                "<Leave>",
-                lambda _event, widget=button:
-                self._animate_widget_color(widget, BG_CARD),
-                add="+",
-            )
+        self._refresh_profile_list()
         self._refresh_home_skin()
         self._update_home_profile(self._current_profile())
 
     def _bind_card_motion(self, card):
-        card.bind(
-            "<Enter>",
-            lambda _event, widget=card:
-            self._animate_widget_color(widget, self.theme["BG_PRIMARY"]),
-            add="+",
-        )
-        card.bind(
-            "<Leave>",
-            lambda _event, widget=card:
-            self._animate_widget_color(widget, self.theme["BG_SECONDARY"]),
-            add="+",
-        )
-        self._refresh_profile_list()
+        """Kept for compatibility; cards no longer change colour on hover."""
+        return None
+
     # ── Version loading ────────────────────────────────────────────────────────
 
     def _load_versions(self):
@@ -3660,16 +3707,13 @@ class MainWindow(ctk.CTk):
 
         for i, p in enumerate(profiles):
             profile_type = p.get("type", "vanilla").title()
-            installed = self._is_installed_for_profile(p)
-            status = "Installed" if installed else "Not installed"
             try:
                 mod_count = sum(
                     path.name.casefold().endswith(".jar")
                     for path in modrinth.list_installed_files(p, "mods")
                 )
-                mod_text = f"{mod_count} installed mod{'s' if mod_count != 1 else ''}"
             except (OSError, ValueError, RuntimeError):
-                mod_text = "Mod count unavailable"
+                mod_count = None
             loader_version = p.get("fabric_loader_version") or getattr(
                 self, "latest_fabric_loader_versions", {}
             ).get(p.get("mc_version"))
@@ -3677,24 +3721,25 @@ class MainWindow(ctk.CTk):
             card = ctk.CTkFrame(
                 self.profile_list_frame, fg_color=BG_CARD,
                 border_width=1,
-                border_color=GREEN if p.get("name") == active else BORDER_COL,
+                border_color=self.theme["ACCENT"] if p.get("name") == active else BORDER_COL,
                 corner_radius=12,
             )
             card.pack(fill="x", pady=5, padx=2)
-            card.configure(height=76)
+            card.configure(height=80)
             card.grid_propagate(False)
             card.grid_columnconfigure(0, weight=1)
             card.grid_rowconfigure(0, weight=1)
+            loader_detail = (
+                f"Fabric {loader_version}"
+                if p.get("type") == "fabric" and loader_version
+                else profile_type
+            )
             details = (
-                f"{p.get('mc_version', 'Unknown version')}  ·  {profile_type}  ·  "
-                + (
-                    f"Fabric {loader_version}  ·  "
-                    if p.get("type") == "fabric" and loader_version
-                    else ""
-                )
-                +
-                f"{status}  ·  {mod_text}"
-                f"{'  ·  ACTIVE' if p.get('name') == active else ''}"
+                f"{p.get('mc_version', 'Unknown version')}  ·  "
+                f"{loader_detail}  ·  "
+                f"{mod_count} mods" if mod_count is not None else
+                f"{p.get('mc_version', 'Unknown version')}  ·  "
+                f"{loader_detail}  ·  Mod count unavailable"
             )
             select_area = ctk.CTkFrame(card, fg_color="transparent")
             select_area.grid(row=0, column=0, sticky="nsew", padx=(10, 4), pady=8)
@@ -3717,7 +3762,16 @@ class MainWindow(ctk.CTk):
                 font=ctk.CTkFont(size=10),
                 wraplength=480,
             )
-            details_label.grid(row=1, column=0, sticky="ew", padx=10)
+            details_label.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10)
+            if p.get("name") == active:
+                ctk.CTkLabel(
+                    select_area,
+                    text="ACTIVE",
+                    fg_color=self.theme["ACCENT"],
+                    text_color=self.theme["TEXT_FG"],
+                    corner_radius=7,
+                    font=ctk.CTkFont(size=9, weight="bold"),
+                ).grid(row=0, column=1, padx=(6, 4))
             self._profile_buttons.append(select)
             ctk.CTkButton(
                 card, text="Edit", width=58, height=30,
@@ -3862,25 +3916,45 @@ class MainWindow(ctk.CTk):
         if not hasattr(self, "home_profile_name"):
             return
         profile_count = len(self.cfg.get("profiles", []))
-        self.home_profile_count.configure(
-            text=f"{profile_count} profile{'s' if profile_count != 1 else ''} available"
-        )
+        profile_names = [
+            item.get("name", "Unnamed profile")
+            for item in self.cfg.get("profiles", [])
+        ]
+        self.home_profile_menu.configure(values=profile_names or ["No profiles"])
+        count_text = f"{profile_count} profile{'s' if profile_count != 1 else ''} available"
         if profile is None:
+            self.home_profile_count.configure(text=count_text)
             self.home_profile_name.configure(text="Select a profile to get started")
             self.home_profile_details.configure(text="Create a profile to install and launch Minecraft.")
+            self.home_status_badge.configure(text="NO PROFILE", fg_color=self.theme["NEUTRAL"])
             self.home_account_label.configure(text="Choose an offline username or sign in with Microsoft.")
+            self.play_btn.configure(state="disabled", text="▶  PLAY")
+            if not profile_names:
+                self.home_profile_menu.set("No profiles")
             self._refresh_home_skin()
             return
-        install_state = "Installed" if self._is_installed_for_profile(profile) else "Ready to install"
+        installed = self._is_installed_for_profile(profile)
+        install_state = "Installed" if installed else "Ready to install"
+        self.home_profile_menu.set(profile.get("name", "Unnamed profile"))
+        self.play_btn.configure(
+            state="normal",
+            text="▶  PLAY" if installed else "▶  INSTALL & PLAY",
+        )
+        loader_version = profile.get("fabric_loader_version") or getattr(
+            self, "latest_fabric_loader_versions", {}
+        ).get(profile.get("mc_version"))
+        loader_text = profile.get("type", "vanilla").title()
+        if profile.get("type") == "fabric" and loader_version:
+            loader_text += f" {loader_version}"
         self.home_profile_name.configure(text=profile.get("name", "Unnamed profile"))
         self.home_profile_details.configure(
-            text=f"Minecraft {profile.get('mc_version', '?')}  ·  "
-                 f"{profile.get('type', 'vanilla').title()}  ·  {install_state}"
+            text=f"Minecraft {profile.get('mc_version', '?')}  ·  {loader_text}"
         )
-        self.home_profile_count.configure(
-            text=f"{profile_count} profile{'s' if profile_count != 1 else ''} available"
-                 f"  ·  Active: {profile.get('name', 'Unnamed profile')}"
+        self.home_status_badge.configure(
+            text=install_state.upper(),
+            fg_color=self.theme["ENABLED"] if installed else self.theme["NEUTRAL"],
         )
+        self.home_profile_count.configure(text=count_text)
         if self.auth_mode_var.get().lower() == "microsoft":
             account = self._ms_account.get("name", "Signed out") if self._ms_account else "Signed out"
             self.home_account_label.configure(text=f"Microsoft account · {account}")
@@ -3889,50 +3963,73 @@ class MainWindow(ctk.CTk):
             self.home_account_label.configure(text=f"Offline profile · {username or 'No username selected'}")
         self._refresh_home_skin()
 
-    def _refresh_home_skin(self):
-        if not hasattr(self, "home_skin_label"):
-            return
-        skin = None
-        username = self.username_var.get().strip() if hasattr(self, "username_var") else ""
-        skin_path = None
-        if username:
-            try:
-                candidate = skin_store.account_cosmetic_dir(
-                    account_store.offline_uuid(username)
-                ) / "skin.png"
-                if candidate.is_file() and not candidate.is_symlink():
-                    skin_path = candidate
-            except (OSError, ValueError):
-                skin_path = None
+    def _select_home_profile(self, name: str):
+        for index, profile in enumerate(self.cfg.get("profiles", [])):
+            if profile.get("name") == name:
+                self._on_profile_selected(index)
+                return
+
+    def _load_account_cosmetics(self, username: str):
+        """Return (skin image or None, slim flag, cape image or None, signature)."""
+        if not username:
+            return None, False, None, (username, None, None, None)
+        skin = cape = None
+        slim = False
+        signature = [username]
         try:
-            skin_key = (
-                username,
-                str(skin_path) if skin_path else None,
-                skin_path.stat().st_mtime_ns if skin_path else None,
-                skin_path.stat().st_size if skin_path else None,
+            account_id = account_store.offline_uuid(username)
+            folder = skin_store.account_cosmetic_dir(account_id)
+        except (OSError, ValueError):
+            return None, False, None, (username, None, None, None)
+        for kind in ("skin", "cape"):
+            path = folder / f"{kind}.png"
+            try:
+                if path.is_file() and not path.is_symlink():
+                    stat = path.stat()
+                    signature.append((stat.st_mtime_ns, stat.st_size))
+                    with Image.open(path) as source:
+                        image = source.convert("RGBA")
+                    if kind == "skin":
+                        skin = image
+                    else:
+                        cape = image
+                else:
+                    signature.append(None)
+            except (OSError, ValueError):
+                signature.append(None)
+        try:
+            account = next(
+                (item for item in account_store.load_accounts()
+                 if item.get("username") == username), None,
             )
-        except OSError:
-            skin_path = None
-            skin_key = (username, None, None, None)
-        if getattr(self, "_home_skin_key", None) == skin_key:
+            slim = bool(account and account.get("skin_model") == "slim")
+        except (OSError, RuntimeError, ValueError):
+            slim = False
+        signature.append(slim)
+        return skin, slim, cape, tuple(signature)
+
+    def _refresh_home_skin(self, force: bool = False):
+        if not hasattr(self, "stage") or not hasattr(self, "username_var"):
             return
-        if skin_path:
-            try:
-                with Image.open(skin_path) as source:
-                    skin = source.convert("RGBA")
-            except (OSError, ValueError):
-                skin = None
-        if skin is None:
-            skin = _default_steve_skin()
+        if self.auth_mode_var.get().lower() == "microsoft":
+            name = self._ms_account.get("name", "") if self._ms_account else ""
+            skin = cape = None
+            slim = False
+            signature = ("microsoft", name)
+            empty = not name
+        else:
+            name = self.username_var.get().strip()
+            skin, slim, cape, signature = self._load_account_cosmetics(name)
+            empty = not name
+        signature = (signature, empty, normalize_theme_name(self.cfg.get("theme")))
+        if not force and getattr(self, "_home_skin_key", None) == signature:
+            return
+        self._home_skin_key = signature
         try:
-            preview = _render_skin_preview(skin)
-        except ValueError:
-            preview = _render_skin_preview(_default_steve_skin())
-        self.home_skin_image = ctk.CTkImage(
-            light_image=preview, dark_image=preview, size=preview.size
-        )
-        self.home_skin_label.configure(image=self.home_skin_image)
-        self._home_skin_key = skin_key
+            self.stage.set_player(name or "Player", skin, slim=slim, cape=cape, empty=empty)
+        except (ValueError, OSError) as exc:
+            self._log(f"Could not render the skin preview: {exc}")
+            self.stage.set_player(name or "Player", None, slim=False, cape=None, empty=empty)
 
     def _on_edit_profile(self):
         profile = self._current_profile()
@@ -4487,38 +4584,47 @@ class MainWindow(ctk.CTk):
     # ── Settings & Theme ──────────────────────────────────────────────────────
 
     def _on_open_settings(self):
-        dlg = SettingsDialog(self, self.theme, self.cfg)
-        if dlg.result:
-            self.theme = get_theme(self.cfg.get("theme", "overworld"))
-            self._apply_theme()
+        self._show_page("settings")
 
-    def _apply_theme(self):
-        t = self.theme
-        self.configure(fg_color=t["BG_PRIMARY"])
-        self.ms_gamertag_lbl.configure(text_color=t["ACCENT"])
-        self.auth_mode_menu.configure(
-            selected_color=t["ACCENT"], selected_hover_color=t["ACCENT_DARK"],
-            unselected_color=t["BG_SECONDARY"],
-        )
-        self.ms_signin_btn.configure(fg_color=t["MS_BLUE"], hover_color=t["MS_BLUE_DARK"])
-        self.info_card.configure(fg_color=t["BG_CARD"], border_color=t["BORDER_COL"])
-        self.ram_slider.configure(
-            progress_color=t["ACCENT"], fg_color=t["BG_PRIMARY"],
-            button_color=t["ACCENT"], button_hover_color=t["ACCENT_DARK"],
-        )
-        self.play_btn.configure(
-            fg_color=t["ACCENT"], text_color=t["BG_PRIMARY"], hover_color=t["ACCENT_DARK"],
-        )
-        self.log_box.configure(fg_color=t["BG_CONSOLE"], border_color=t["BORDER_COL"])
-        self.progress_bar.configure(progress_color=t["ACCENT"], fg_color=t["BG_PRIMARY"])
-        self.new_btn.configure(fg_color=t["ACCENT"], text_color=t["BG_PRIMARY"], hover_color=t["ACCENT_DARK"])
-        for key, button in self.nav_buttons.items():
-            active = button.cget("fg_color") != "transparent"
-            button.configure(
-                fg_color=t["ACCENT"] if active else "transparent",
-                hover_color=t["ACCENT_DARK"] if active else t["BG_PRIMARY"],
-                text_color=t["BG_PRIMARY"] if active else t["TEXT_FG"],
-            )
+    def _update_module_tokens(self, theme: dict):
+        names = {
+            "BG_PRIMARY": "BG_PRIMARY", "BG_SECONDARY": "BG_SECONDARY",
+            "BG_CONSOLE": "BG_CONSOLE", "BG_CARD": "BG_CARD",
+            "BORDER_COL": "BORDER_COL", "GREEN": "ACCENT",
+            "GREEN_DARK": "ACCENT_DARK", "BLUE": "ACCENT_ALT", "RED": "RED",
+            "MS_BLUE": "MS_BLUE", "MS_BLUE_DARK": "MS_BLUE_DARK",
+            "TEXT_FG": "TEXT_FG", "TEXT_MUTED": "TEXT_MUTED",
+            "TEXT_LABEL": "TEXT_LABEL", "ACCENT_TEXT": "ACCENT_TEXT",
+        }
+        module_globals = globals()
+        for name, key in names.items():
+            module_globals[name] = theme[key]
+
+    def _switch_theme(self, name: str):
+        """Switch between the light and dark theme live, without a restart."""
+        name = normalize_theme_name(name)
+        old = dict(self.theme)
+        new = get_theme(name)
+        self.cfg["theme"] = name
+        try:
+            config.save(self.cfg)
+        except OSError as exc:
+            self._log(f"Could not save the theme: {exc}")
+        if old == new:
+            return
+        mapping = color_map(old, new)
+        self.motion.cancel_all()
+        self.theme.clear()           # in place: every page shares this dict
+        self.theme.update(new)
+        apply_customtkinter_palette(new)
+        self._update_module_tokens(new)
+        retheme_widget_tree(self, mapping)
+        self.configure(fg_color=new["BG_PRIMARY"])
+        self._render_background()
+        self.stage.apply_theme(new)
+        self._home_skin_key = None
+        self._refresh_home_skin(force=True)
+        self._set_active_navigation(self._current_page)
         self._refresh_profile_list()
 
     # ── Microsoft Auth UI ─────────────────────────────────────────────────────

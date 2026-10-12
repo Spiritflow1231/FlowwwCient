@@ -2,56 +2,61 @@ import unittest
 
 import customtkinter as ctk
 
-from ui.theme import apply_customtkinter_palette, get_theme
+from core.skin_render import render_player
 from ui import main_window
+from ui.motion import Motion, lerp_color
+from ui.theme import (
+    DEFAULT_THEME, apply_customtkinter_palette, color_map, get_theme,
+    normalize_theme_name,
+)
 
 
-class CrimsonThemeTests(unittest.TestCase):
-    def test_main_window_module_level_color_tokens_match_theme(self):
-        theme = get_theme()
-        tokens = {
-            "BG_PRIMARY": "BG_PRIMARY",
-            "BG_SECONDARY": "BG_SECONDARY",
-            "BG_CONSOLE": "BG_CONSOLE",
-            "BG_CARD": "BG_CARD",
-            "BORDER_COL": "BORDER_COL",
-            "GREEN": "ACCENT",
-            "GREEN_DARK": "ACCENT_DARK",
-            "BLUE": "ACCENT_ALT",
-            "RED": "RED",
-            "MS_BLUE": "MS_BLUE",
-            "MS_BLUE_DARK": "MS_BLUE_DARK",
-            "TEXT_FG": "TEXT_FG",
-            "TEXT_MUTED": "TEXT_MUTED",
-            "TEXT_LABEL": "TEXT_LABEL",
-        }
-        for name, theme_key in tokens.items():
-            with self.subTest(name=name):
-                self.assertEqual(getattr(main_window, name), theme[theme_key])
+class ThemeTests(unittest.TestCase):
+    def test_default_is_dark_purple(self):
+        self.assertEqual(DEFAULT_THEME, "dark")
+        self.assertEqual(get_theme()["BG_PRIMARY"], "#0B0A1A")
+        self.assertEqual(get_theme()["ACCENT"], "#6C5CE7")
 
-    def test_legacy_theme_names_resolve_to_the_crimson_brand_palette(self):
-        for name in ("crimson", "overworld", "nether", "end"):
-            with self.subTest(name=name):
-                theme = get_theme(name)
-                self.assertEqual(theme["BG_PRIMARY"], "#0B0D10")
-                self.assertEqual(theme["BG_SECONDARY"], "#14171C")
-                self.assertEqual(theme["ACCENT"], "#E53945")
-                self.assertEqual(theme["TEXT_FG"], "#F4F5F7")
+    def test_legacy_names_resolve_to_dark(self):
+        for name in ("crimson", "overworld", "nether", "end", None, ""):
+            self.assertEqual(normalize_theme_name(name), "dark")
 
-    def test_customtkinter_defaults_cover_dialogs_scrollbars_and_controls(self):
-        apply_customtkinter_palette()
-        theme = ctk.ThemeManager.theme
+    def test_palette_values_unique_per_theme(self):
+        for name in ("light", "dark"):
+            theme = get_theme(name)
+            values = [v.lower() for k, v in theme.items() if k not in ("ACCENT_TEXT",)]
+            # shared brand colours may repeat across themes, but not inside one
+            self.assertEqual(len(values), len(set(values)), name)
 
-        self.assertEqual(theme["CTkToplevel"]["fg_color"], ["#0B0D10", "#0B0D10"])
-        self.assertEqual(theme["CTkButton"]["fg_color"], ["#E53945", "#E53945"])
-        self.assertEqual(theme["CTkLabel"]["text_color"], ["#F4F5F7", "#F4F5F7"])
-        self.assertEqual(theme["CTkSwitch"]["progress_color"], ["#E53945", "#E53945"])
-        self.assertEqual(theme["CTkScrollbar"]["button_hover_color"], ["#E53945", "#E53945"])
-        self.assertEqual(theme["CTkTextbox"]["fg_color"], ["#0B0D10", "#0B0D10"])
-        self.assertEqual(
-            theme["CTkScrollableFrame"]["label_fg_color"],
-            ["#14171C", "#14171C"],
-        )
+    def test_no_red_accent(self):
+        for name in ("light", "dark"):
+            self.assertEqual(get_theme(name)["ACCENT"], "#6C5CE7")
+
+    def test_color_map_skips_identical(self):
+        mapping = color_map(get_theme("light"), get_theme("dark"))
+        self.assertNotIn("#6c5ce7", mapping)
+        self.assertEqual(mapping["#fdfcff"], "#0B0A1A")
+
+    def test_customtkinter_defaults(self):
+        apply_customtkinter_palette(get_theme("dark"))
+        t = ctk.ThemeManager.theme
+        self.assertEqual(t["CTkButton"]["fg_color"], ["#6C5CE7", "#6C5CE7"])
+        self.assertEqual(t["CTkLabel"]["text_color"], ["#F4F3FA", "#F4F3FA"])
+
+    def test_lerp_color(self):
+        self.assertEqual(lerp_color("#000000", "#ffffff", 0.5), "#808080")
+
+
+class SkinRenderTests(unittest.TestCase):
+    def _skin(self, h):
+        from PIL import Image
+        return Image.new("RGBA", (64, h), (200, 120, 90, 255))
+
+    def test_classic_slim_legacy(self):
+        for h, slim in ((64, False), (64, True), (32, False)):
+            res = render_player(self._skin(h), slim=slim, size=(180, 240))
+            self.assertEqual(res.image.size, (180, 240))
+            self.assertIsNotNone(res.image.getbbox())
 
 
 if __name__ == "__main__":

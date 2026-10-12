@@ -48,6 +48,8 @@ a = Analysis(
     datas=[
         *auto_datas,
         (str(PROJECT_ROOT / "assets" / "Minecraft.jpg"), "assets"),
+        (str(PROJECT_ROOT / "assets" / "bg.jpg"), "assets"),
+        (str(PROJECT_ROOT / "assets" / "stage_bg.jpg"), "assets"),
     ],
     hiddenimports=[
         # Core app modules — explicit so PyInstaller never misses them
@@ -56,6 +58,11 @@ a = Analysis(
         'core.updater',
         'core.installer',
         'core.modrinth',
+        'core.skin_render',
+        'ui.motion',
+        'ui.overlay',
+        'ui.stage',
+        'ui.theme',
         'core.launcher',
         'core.config',
         'core.java_manager',
