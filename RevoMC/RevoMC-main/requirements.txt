@@ -4,3 +4,4 @@ certifi
 minecraft-launcher-lib
 rich
 questionary
+numpy
