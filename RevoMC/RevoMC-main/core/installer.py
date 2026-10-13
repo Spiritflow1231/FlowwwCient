@@ -51,6 +51,21 @@ AVAILABLE_MODS = {
         "label": "FerriteCore",
         "desc": "RAM usage reduction",
     },
+    "entityculling": {
+        "id": "NNAgCjsB",
+        "label": "Entity Culling",
+        "desc": "Skips rendering entities you cannot see",
+    },
+    "immediatelyfast": {
+        "id": "5ZwdcRci",
+        "label": "ImmediatelyFast",
+        "desc": "Faster HUD and text rendering",
+    },
+    "modernfix": {
+        "id": "nmDcB62a",
+        "label": "ModernFix",
+        "desc": "Faster startup, less memory",
+    },
 }
 
 FABRIC_API_ID = "P7dR8mSH"

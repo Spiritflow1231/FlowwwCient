@@ -34,8 +34,7 @@ import core.modrinth as modrinth
 import core.profiles as profile_store
 import core.accounts as account_store
 import core.skins as skin_store
-from core import client_mods
-from ui.client_mods_page import ClientModsPanel
+from core import fps_boost, skin_loader
 from core import skin_render
 from core.skins import validate_cosmetic_image
 from ui.motion import Motion
@@ -255,7 +254,6 @@ class ProfileEditorWindow(ctk.CTkFrame):
         ("Shader Packs", "shaderpacks"),
         ("Datapacks", "datapacks"),
         ("Modpacks", "modpacks"),
-        ("Client Mods", "client_mods"),
     ]
     CATEGORY_LABELS = {key: label for label, key in CATEGORIES}
 
@@ -528,12 +526,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
 
     def _slide_content(self):
         """Slide the content area up a little whenever the section or tab changes."""
-        target = (
-            getattr(self, "client_mods_panel", None)
-            if self.category == "client_mods" else self.results
-        )
-        if target is None:
-            return
+        target = self.results
         motion = self.parent.motion
         distance = 26
 
@@ -564,23 +557,6 @@ class ProfileEditorWindow(ctk.CTkFrame):
     def _refresh_content(self):
         self._request_serial += 1
         self.heading.configure(text=self.CATEGORY_LABELS[self.category])
-        if self.category == "client_mods":
-            self.search_row.grid_remove()
-            self.world_frame.grid_remove()
-            self.tabs.grid_remove()
-            self._clear_results()
-            if getattr(self, "client_mods_panel", None) is None:
-                self.client_mods_panel = ClientModsPanel(self.content, self)
-                self.client_mods_panel.grid(row=4, column=0, sticky="nsew",
-                                            padx=18, pady=(0, 8))
-            else:
-                self.client_mods_panel.grid()
-                self.client_mods_panel.refresh()
-            self.client_mods_panel.tkraise()
-            return
-        panel = getattr(self, "client_mods_panel", None)
-        if panel is not None:
-            panel.grid_remove()
         if self.category != "overview":
             category_names = {
                 "mods": "mods",
@@ -684,6 +660,67 @@ class ProfileEditorWindow(ctk.CTkFrame):
             text="This tunes JVM garbage collection and does not repair poor Wi-Fi or server latency.",
             text_color=self.theme["TEXT_MUTED"], wraplength=610, justify="left",
         ).pack(anchor="w", padx=12, pady=(0, 10))
+
+        ctk.CTkLabel(
+            self.results, text="FPS Boost", text_color=self.theme["TEXT_FG"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 2))
+        ctk.CTkLabel(
+            self.results,
+            text="Installs Sodium, Lithium, FerriteCore, Entity Culling, ImmediatelyFast and "
+                 "ModernFix, removes heavy HUD / blur / fullbright extras, and turns on tuned "
+                 "Java settings. Fabric profiles only.",
+            text_color=self.theme["TEXT_MUTED"], wraplength=610, justify="left",
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+        fps_button = ctk.CTkButton(
+            self.results, text="⚡  Apply FPS Boost", height=36,
+            fg_color=self.theme["ACCENT"], hover_color=self.theme["ACCENT_DARK"],
+            text_color=self.theme["ACCENT_TEXT"],
+        )
+        fps_button.pack(anchor="w", padx=12, pady=(0, 14))
+
+        def apply_fps_boost():
+            if self._working:
+                return
+            self._working = True
+            fps_button.configure(state="disabled", text="Working…")
+            self._set_status("Applying FPS Boost…")
+
+            def worker():
+                try:
+                    summary = fps_boost.apply(
+                        profile, log=lambda m: self._post(lambda t=m: self._set_status(t)),
+                        max_ram_gb=self.parent.max_ram_gb,
+                    )
+                    self._post(lambda: finish(summary, None))
+                except Exception as exc:
+                    self._post(lambda m=str(exc): finish(None, m))
+
+            def finish(summary, error):
+                self._working = False
+                try:
+                    fps_button.configure(state="normal", text="⚡  Apply FPS Boost")
+                except TclError:
+                    pass
+                if error:
+                    self._set_status(f"FPS Boost failed: {error}")
+                    return
+                try:
+                    config.save(self.parent.cfg)
+                    profile_store.save_manifest(profile)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    self._set_status(f"FPS Boost applied but could not save: {exc}")
+                    return
+                self._set_status(
+                    f"FPS Boost done · removed {len(summary['removed'])} extra(s), "
+                    f"{len(summary['installed'])} new mod file(s) installed. "
+                    f"Memory is now {profile.get('memory_gb', 2)} GB."
+                )
+                self._refresh_content()
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        fps_button.configure(command=apply_fps_boost)
 
         def save_overview():
             name = name_var.get().strip()
@@ -4321,22 +4358,14 @@ class MainWindow(ctk.CTk):
             skin = skin if skin.is_file() else None
             cape = cape if cape.is_file() else None
             if skin is None and cape is None:
-                client_mods.sync_local_skin(game_dir, username, None, None)
+                skin_loader.sync_local_skin(game_dir, username, None, None)
                 return
-            csl = {"slug": client_mods.CSL_SLUG, "title": "CustomSkinLoader"}
-            if not client_mods.is_installed(profile, csl):
-                log("Installing CustomSkinLoader so your skin shows in game…")
-                _records, failures, _warnings = client_mods.install_entries(
-                    profile, [csl], game_dir / "mods", log=log
-                )
-                if failures:
-                    log("⚠ CustomSkinLoader: " + "; ".join(failures))
-                else:
-                    profile_store.save_manifest(profile)
-                    config.save(self.cfg)
-            done = client_mods.sync_local_skin(game_dir, username, skin, cape)
+            if skin_loader.ensure_installed(profile, game_dir / "mods", log):
+                profile_store.save_manifest(profile)
+                config.save(self.cfg)
+            done = skin_loader.sync_local_skin(game_dir, username, skin, cape)
             if done:
-                log(f"Offline {' + '.join(done)} prepared for in-game display.")
+                log(f"Offline {' + '.join(done)} ready for in-game display.")
         except Exception as exc:  # never block launching over cosmetics
             log(f"⚠ Could not prepare offline skin: {exc}")
 
