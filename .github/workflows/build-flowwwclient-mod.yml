@@ -1,0 +1,39 @@
+name: Build FlowwwClient Fabric Mod
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'FlowwwClient_Custom_UI_Pack/fabric-mod/**'
+      - '.github/workflows/build-flowwwclient-mod.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: FlowwwClient_Custom_UI_Pack/fabric-mod
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Build Fabric mod
+        run: gradle build --no-daemon
+      - name: Upload mod JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowwwClient-Fabric-Mod
+          path: FlowwwClient_Custom_UI_Pack/fabric-mod/build/libs/flowwwclient-1.0.0.jar
+          if-no-files-found: error
