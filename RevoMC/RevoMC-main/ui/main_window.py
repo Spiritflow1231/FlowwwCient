@@ -667,9 +667,9 @@ class ProfileEditorWindow(ctk.CTkFrame):
         ).pack(anchor="w", padx=12, pady=(8, 2))
         ctk.CTkLabel(
             self.results,
-            text="Installs Sodium, Lithium, FerriteCore, Entity Culling, ImmediatelyFast and "
-                 "ModernFix, removes heavy HUD / blur / fullbright extras, and turns on tuned "
-                 "Java settings. Fabric profiles only.",
+            text="Installs Sodium, Lithium, FerriteCore, Entity Culling and ImmediatelyFast, "
+                 "removes heavy HUD / blur / fullbright extras and raises memory to 4 GB. "
+                 "Fabric profiles only.",
             text_color=self.theme["TEXT_MUTED"], wraplength=610, justify="left",
         ).pack(anchor="w", padx=12, pady=(0, 6))
         fps_button = ctk.CTkButton(

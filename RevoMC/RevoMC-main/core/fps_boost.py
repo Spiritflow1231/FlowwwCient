@@ -2,7 +2,7 @@
 
 * removes HUD / client-style extras that cost frames (HUD+, motion blur, fullbright, ...) — only files this launcher recognises, nothing else;
 * installs the proven FPS mods (Sodium, Lithium, FerriteCore, Entity Culling,
-  ImmediatelyFast, ModernFix) for the profile's Minecraft version.
+  ImmediatelyFast) for the profile's Minecraft version.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Callable
 from core import modrinth
 from core.installer import install_mods
 
-FPS_MODS = ["sodium", "lithium", "ferrite-core", "entityculling", "immediatelyfast", "modernfix"]
+FPS_MODS = ["sodium", "lithium", "ferrite-core", "entityculling", "immediatelyfast"]
 
 # Modrinth project IDs of extras that earlier launcher builds could install.
 EXTRA_PROJECT_IDS = {

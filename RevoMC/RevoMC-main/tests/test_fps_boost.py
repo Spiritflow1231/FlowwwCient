@@ -42,13 +42,11 @@ class FpsBoostTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             fps_boost.apply({"type": "vanilla", "mc_version": "1.21.1"})
 
-    def test_jvm_boost_flags(self):
+    def test_jvm_flags_stay_simple(self):
         args = launcher.build_jvm_args(21, 4)
-        self.assertIn("-XX:G1NewSizePercent=30", args)
-        self.assertIn("-XX:+UnlockExperimentalVMOptions", args)
-        self.assertLess(args.index("-XX:+UnlockExperimentalVMOptions"),
-                        args.index("-XX:G1NewSizePercent=30"))
-        self.assertNotIn("-XX:G1NewSizePercent=30", launcher.build_jvm_args(21, 4, performance_boost=False))
+        self.assertIn("-XX:+UseG1GC", args)
+        self.assertNotIn("-XX:G1NewSizePercent=30", args)
+        self.assertNotIn("-XX:InitiatingHeapOccupancyPercent=15", args)
 
 
 if __name__ == "__main__":

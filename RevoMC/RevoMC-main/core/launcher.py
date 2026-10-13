@@ -238,18 +238,6 @@ def build_jvm_args(
             "-XX:+UseG1GC",
             "-XX:+ParallelRefProcEnabled",
             "-XX:MaxGCPauseMillis=200",
-            # tuned G1 settings: smaller young-gen pauses = fewer frame stutters
-            "-XX:+UnlockExperimentalVMOptions",
-            "-XX:G1NewSizePercent=30",
-            "-XX:G1MaxNewSizePercent=40",
-            "-XX:G1HeapRegionSize=16M",
-            "-XX:G1ReservePercent=20",
-            "-XX:G1MixedGCCountTarget=4",
-            "-XX:InitiatingHeapOccupancyPercent=15",
-            "-XX:SurvivorRatio=32",
-            "-XX:MaxTenuringThreshold=1",
-            "-XX:+DisableExplicitGC",
-            "-XX:+PerfDisableSharedMem",
         ]
     else:
         performance_args = []
