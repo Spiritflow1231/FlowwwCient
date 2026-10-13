@@ -1,0 +1,197 @@
+{
+  "version": 1,
+  "note": "Fair-play only: no cheats, X-ray, auto-clickers or reach mods. Slugs are resolved on Modrinth at install time.",
+  "presets": [
+    {
+      "id": "pvp",
+      "title": "PvP Pack",
+      "description": "FPS + HUD essentials for PvP"
+    },
+    {
+      "id": "performance",
+      "title": "Performance Pack",
+      "description": "Maximum FPS and lowest CPU"
+    },
+    {
+      "id": "skins",
+      "title": "Skins",
+      "description": "See your offline skin and cape in game"
+    }
+  ],
+  "mods": [
+    {
+      "slug": "sodium",
+      "title": "Sodium",
+      "description": "Modern rendering engine. Biggest FPS gain.",
+      "category": "Performance",
+      "presets": [
+        "performance",
+        "pvp"
+      ]
+    },
+    {
+      "slug": "lithium",
+      "title": "Lithium",
+      "description": "Game logic and tick optimisations.",
+      "category": "Performance",
+      "presets": [
+        "performance",
+        "pvp"
+      ]
+    },
+    {
+      "slug": "ferrite-core",
+      "title": "FerriteCore",
+      "description": "Lower memory usage.",
+      "category": "Performance",
+      "presets": [
+        "performance",
+        "pvp"
+      ]
+    },
+    {
+      "slug": "entityculling",
+      "title": "Entity Culling",
+      "description": "Skips rendering entities you cannot see.",
+      "category": "Performance",
+      "presets": [
+        "performance",
+        "pvp"
+      ]
+    },
+    {
+      "slug": "immediatelyfast",
+      "title": "ImmediatelyFast",
+      "description": "Faster immediate-mode rendering (HUD, text).",
+      "category": "Performance",
+      "presets": [
+        "performance",
+        "pvp"
+      ]
+    },
+    {
+      "slug": "modernfix",
+      "title": "ModernFix",
+      "description": "Faster startup and less memory.",
+      "category": "Performance",
+      "presets": [
+        "performance"
+      ]
+    },
+    {
+      "slug": "moreculling",
+      "title": "More Culling",
+      "description": "Extra culling for blocks and entities.",
+      "category": "Performance",
+      "presets": [
+        "performance"
+      ]
+    },
+    {
+      "slug": "dynamic-fps",
+      "title": "Dynamic FPS",
+      "description": "Reduces FPS when the window is in the background.",
+      "category": "Performance",
+      "presets": [
+        "performance"
+      ]
+    },
+    {
+      "slug": "krypton",
+      "title": "Krypton",
+      "description": "Lower networking overhead (helps on servers).",
+      "category": "Performance",
+      "presets": [
+        "performance",
+        "pvp"
+      ]
+    },
+    {
+      "slug": "sodium-extra",
+      "title": "Sodium Extra",
+      "description": "More video options for Sodium. Needs Sodium.",
+      "category": "Video",
+      "presets": [
+        "performance"
+      ]
+    },
+    {
+      "slug": "reeses-sodium-options",
+      "title": "Reese's Sodium Options",
+      "description": "Cleaner Sodium settings screen.",
+      "category": "Video",
+      "presets": [
+        "performance"
+      ]
+    },
+    {
+      "slug": "iris",
+      "title": "Iris Shaders",
+      "description": "Shader pack support (works with Sodium).",
+      "category": "Video",
+      "presets": []
+    },
+    {
+      "slug": "betterf3",
+      "title": "BetterF3",
+      "description": "Clean, colourful F3 debug screen.",
+      "category": "PvP & HUD",
+      "presets": [
+        "pvp"
+      ]
+    },
+    {
+      "slug": "appleskin",
+      "title": "AppleSkin",
+      "description": "Shows food and saturation values on the HUD.",
+      "category": "PvP & HUD",
+      "presets": [
+        "pvp"
+      ]
+    },
+    {
+      "slug": "zoomify",
+      "title": "Zoomify",
+      "description": "Configurable zoom key.",
+      "category": "PvP & HUD",
+      "presets": [
+        "pvp"
+      ]
+    },
+    {
+      "slug": "mouse-tweaks",
+      "title": "Mouse Tweaks",
+      "description": "Faster inventory clicking and dragging.",
+      "category": "Utility",
+      "presets": [
+        "pvp"
+      ]
+    },
+    {
+      "slug": "modmenu",
+      "title": "Mod Menu",
+      "description": "In-game list and settings of your mods.",
+      "category": "Utility",
+      "presets": [
+        "performance",
+        "pvp"
+      ]
+    },
+    {
+      "slug": "no-chat-reports",
+      "title": "No Chat Reports",
+      "description": "Disables chat signing and reporting.",
+      "category": "Utility",
+      "presets": []
+    },
+    {
+      "slug": "customskinloader",
+      "title": "CustomSkinLoader",
+      "description": "Shows your offline skin and cape in game.",
+      "category": "Skins",
+      "presets": [
+        "skins"
+      ]
+    }
+  ]
+}

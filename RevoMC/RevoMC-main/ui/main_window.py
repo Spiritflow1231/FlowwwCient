@@ -34,6 +34,8 @@ import core.modrinth as modrinth
 import core.profiles as profile_store
 import core.accounts as account_store
 import core.skins as skin_store
+from core import client_mods
+from ui.client_mods_page import ClientModsPanel
 from core import skin_render
 from core.skins import validate_cosmetic_image
 from ui.motion import Motion
@@ -507,6 +509,7 @@ class ProfileEditorWindow(ctk.CTkFrame):
             )
 
         self._refresh_content()
+        self._slide_content()
 
     def _select_tab(self, tab):
         self.tab = tab
@@ -521,6 +524,26 @@ class ProfileEditorWindow(ctk.CTkFrame):
         )
 
         self._refresh_content()
+        self._slide_content()
+
+    def _slide_content(self):
+        """Slide the content area up a little whenever the section or tab changes."""
+        target = (
+            getattr(self, "client_mods_panel", None)
+            if self.category == "client_mods" else self.results
+        )
+        if target is None:
+            return
+        motion = self.parent.motion
+        distance = 26
+
+        # a CTkScrollableFrame is laid out through its outer frame
+        outer = getattr(target, "_parent_frame", target)
+
+        def step(progress):
+            outer.grid_configure(pady=(round(distance * (1 - progress)), 8))
+
+        motion.run(("editor-section", str(self)), 200, step)
 
     def _on_search(self):
         if self.category == "overview":
@@ -546,8 +569,18 @@ class ProfileEditorWindow(ctk.CTkFrame):
             self.world_frame.grid_remove()
             self.tabs.grid_remove()
             self._clear_results()
-            self._show_state("Client Mods will be available here.")
+            if getattr(self, "client_mods_panel", None) is None:
+                self.client_mods_panel = ClientModsPanel(self.content, self)
+                self.client_mods_panel.grid(row=4, column=0, sticky="nsew",
+                                            padx=18, pady=(0, 8))
+            else:
+                self.client_mods_panel.grid()
+                self.client_mods_panel.refresh()
+            self.client_mods_panel.tkraise()
             return
+        panel = getattr(self, "client_mods_panel", None)
+        if panel is not None:
+            panel.grid_remove()
         if self.category != "overview":
             category_names = {
                 "mods": "mods",
@@ -4285,6 +4318,37 @@ class MainWindow(ctk.CTk):
                 ),
             )
 
+    def _prepare_offline_skin(self, profile, game_dir, username, identity):
+        """Make the offline account's skin/cape visible in the game (best effort)."""
+        def log(message):
+            self.after(0, lambda msg=message: self._log(msg))
+
+        try:
+            folder = skin_store.account_cosmetic_dir(identity["id"])
+            skin = folder / "skin.png"
+            cape = folder / "cape.png"
+            skin = skin if skin.is_file() else None
+            cape = cape if cape.is_file() else None
+            if skin is None and cape is None:
+                client_mods.sync_local_skin(game_dir, username, None, None)
+                return
+            csl = {"slug": client_mods.CSL_SLUG, "title": "CustomSkinLoader"}
+            if not client_mods.is_installed(profile, csl):
+                log("Installing CustomSkinLoader so your skin shows in game…")
+                _records, failures, _warnings = client_mods.install_entries(
+                    profile, [csl], game_dir / "mods", log=log
+                )
+                if failures:
+                    log("⚠ CustomSkinLoader: " + "; ".join(failures))
+                else:
+                    profile_store.save_manifest(profile)
+                    config.save(self.cfg)
+            done = client_mods.sync_local_skin(game_dir, username, skin, cape)
+            if done:
+                log(f"Offline {' + '.join(done)} prepared for in-game display.")
+        except Exception as exc:  # never block launching over cosmetics
+            log(f"⚠ Could not prepare offline skin: {exc}")
+
     def _on_play_btn(self):
         profile = self._current_profile()
         if not profile:
@@ -4414,6 +4478,9 @@ class MainWindow(ctk.CTk):
                         raise RuntimeError(
                             f"Fabric API could not be verified for Minecraft {mc_version}."
                         )
+
+                if profile_type == "fabric" and not is_ms:
+                    self._prepare_offline_skin(profile, game_dir, username, offline_identity)
 
                 self.after(0, lambda: self._log("🚀 Starting game…"))
                 proc = launch(
