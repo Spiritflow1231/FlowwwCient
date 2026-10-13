@@ -3353,13 +3353,12 @@ class MainWindow(ctk.CTk):
         self.home_panel = ctk.CTkFrame(parent, fg_color="transparent")
         panel = self.home_panel
         panel.grid_columnconfigure(0, weight=3, uniform="home", minsize=250)
-        panel.grid_columnconfigure(1, weight=4, uniform="home", minsize=340)
-        panel.grid_columnconfigure(2, weight=3, uniform="home", minsize=250)
+        panel.grid_columnconfigure(1, weight=7, uniform="home", minsize=420)
         panel.grid_rowconfigure(1, weight=1)
         ctk.CTkLabel(
             panel, text="Play", text_color=TEXT_FG,
             font=ctk.CTkFont(size=24, weight="bold"),
-        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         def glass(**options):
             return ctk.CTkFrame(
@@ -3414,21 +3413,20 @@ class MainWindow(ctk.CTk):
         )
         for row, (title, command) in enumerate(action_items, start=8):
             button = ctk.CTkButton(
-                left, text=title, anchor="w", height=38, corner_radius=10,
+                left, text=title, anchor="w", height=34, corner_radius=10,
                 fg_color=BG_CARD, hover_color=BORDER_COL, text_color=TEXT_FG,
                 border_width=1, border_color=BORDER_COL,
                 font=ctk.CTkFont(size=12, weight="bold"), command=command,
             )
             button.grid(row=row, column=0, sticky="ew", padx=18, pady=3)
         ctk.CTkButton(
-            left, text="+  New profile", height=38, corner_radius=10,
+            left, text="+  New profile", height=34, corner_radius=10,
             command=self._on_new_profile,
         ).grid(row=12, column=0, sticky="ew", padx=18, pady=(10, 18))
-        left.grid_rowconfigure(13, weight=1)
 
         # ── centre: hero stage with the PLAY button below ────────────────────
         centre = glass()
-        centre.grid(row=1, column=1, sticky="nsew", padx=8)
+        centre.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
         centre.grid_columnconfigure(0, weight=1)
         centre.grid_rowconfigure(0, weight=1)
         scene = None
@@ -3459,25 +3457,29 @@ class MainWindow(ctk.CTk):
             add="+",
         )
 
-        # ── right: memory, progress, status ──────────────────────────────────
-        launch_card = glass()
-        launch_card.grid(row=1, column=2, sticky="nsew", padx=(8, 0))
-        launch_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            launch_card, text="Launch settings", text_color=TEXT_FG,
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, sticky="w", padx=18, pady=(18, 6))
-        self.home_account_label = ctk.CTkLabel(
-            launch_card, text="", text_color=TEXT_MUTED, anchor="w",
-            font=ctk.CTkFont(size=12), wraplength=230, justify="left",
+        # progress + status live under the PLAY button (the old "Launch settings"
+        # card is gone: memory is a per-profile setting now, in Edit profile)
+        self.progress_bar = ctk.CTkProgressBar(
+            centre, progress_color=GREEN, fg_color=BORDER_COL,
+            height=8, corner_radius=6,
         )
-        self.home_account_label.grid(row=1, column=0, sticky="ew", padx=18, pady=(0, 16))
+        self.progress_bar.set(0)
+        self.progress_bar.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 6))
+        self.status_lbl = ctk.CTkLabel(
+            centre, text="Ready to launch Minecraft.",
+            text_color=TEXT_MUTED, font=ctk.CTkFont(size=12),
+            anchor="center", justify="center", wraplength=520,
+        )
+        self.status_lbl.grid(row=3, column=0, sticky="ew", padx=28, pady=(0, 14))
+        self.play_btn.grid_configure(pady=(0, 12))
+
+        # memory widgets are kept off-screen: they mirror the active profile's
+        # memory so launching and the profile editor stay in sync
+        self._hidden_launch = ctk.CTkFrame(panel, fg_color="transparent")
         self.ram_label_lbl = ctk.CTkLabel(
-            launch_card, text=f"Memory allocation · {self.cfg.get('ram_gb', 2)} GB",
-            text_color=TEXT_FG, anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            self._hidden_launch,
+            text=f"Memory allocation · {self.cfg.get('ram_gb', 2)} GB",
         )
-        self.ram_label_lbl.grid(row=2, column=0, sticky="ew", padx=18)
         try:
             configured_ram = int(self.cfg.get("ram_gb", 2))
         except (TypeError, ValueError):
@@ -3491,29 +3493,18 @@ class MainWindow(ctk.CTk):
                 messagebox.showerror("Could not save RAM setting", str(exc), parent=self)
         self.ram_var = ctk.IntVar(value=configured_ram)
         self.ram_slider = ctk.CTkSlider(
-            launch_card, from_=1, to=self.max_ram_gb,
+            self._hidden_launch, from_=1, to=self.max_ram_gb,
             number_of_steps=max(1, self.max_ram_gb - 1),
             variable=self.ram_var, command=self._on_ram_changed,
-            progress_color=GREEN, fg_color=BORDER_COL,
-            button_color=GREEN, button_hover_color=GREEN_DARK,
         )
-        self.ram_slider.grid(row=3, column=0, sticky="ew", padx=18, pady=(6, 22))
-        ctk.CTkLabel(
-            launch_card, text="Progress", text_color=TEXT_FG, anchor="w",
-            font=ctk.CTkFont(size=12, weight="bold"),
-        ).grid(row=4, column=0, sticky="ew", padx=18)
-        self.progress_bar = ctk.CTkProgressBar(
-            launch_card, progress_color=GREEN, fg_color=BORDER_COL,
-            height=8, corner_radius=6,
+        # account line sits in the profile card
+        self.home_account_label = ctk.CTkLabel(
+            left, text="", text_color=TEXT_MUTED, anchor="w",
+            font=ctk.CTkFont(size=11), wraplength=230, justify="left",
         )
-        self.progress_bar.set(0)
-        self.progress_bar.grid(row=5, column=0, sticky="ew", padx=18, pady=(8, 8))
-        self.status_lbl = ctk.CTkLabel(
-            launch_card, text="Ready to launch Minecraft.",
-            text_color=TEXT_MUTED, font=ctk.CTkFont(size=12),
-            anchor="w", justify="left", wraplength=230,
-        )
-        self.status_lbl.grid(row=6, column=0, sticky="ew", padx=18, pady=(0, 18))
+        self.home_account_label.grid(row=13, column=0, sticky="ew", padx=18, pady=(0, 14))
+        left.grid_rowconfigure(13, weight=0)
+        left.grid_rowconfigure(14, weight=1)
 
         self._refresh_profile_list()
         self._refresh_home_skin()
@@ -4377,7 +4368,11 @@ class MainWindow(ctk.CTk):
         mc_version   = profile["mc_version"]
         profile_type = profile["type"]
         enabled_mods = profile.get("mods", [])
-        ram_gb       = self.ram_var.get()
+        try:
+            ram_gb = max(1, min(int(profile.get("memory_gb") or self.ram_var.get()),
+                                self.max_ram_gb))
+        except (TypeError, ValueError):
+            ram_gb = self.ram_var.get()
         use_dgpu     = self.cfg.get("use_dgpu", False)
         needs_install = not self._is_installed_for_profile(profile)
         needs_profile_mods = (

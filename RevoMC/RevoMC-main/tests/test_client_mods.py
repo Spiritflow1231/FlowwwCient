@@ -17,13 +17,13 @@ class CatalogTests(unittest.TestCase):
         catalog = client_mods.load_catalog()
         slugs = [m["slug"] for m in catalog["mods"]]
         self.assertEqual(len(slugs), len(set(slugs)))
-        self.assertIn("sodium", slugs)
+        self.assertIn("hud-plus", slugs)
+        self.assertNotIn("sodium", slugs)
         banned = {"freecam", "xray", "autoclicker", "reach", "killaura", "baritone"}
         self.assertFalse(banned & {s.replace("-", "") for s in slugs})
         for mod in catalog["mods"]:
             self.assertTrue(mod["title"] and mod["description"] and mod["category"])
         self.assertTrue(client_mods.preset_entries(catalog, "pvp"))
-        self.assertTrue(client_mods.preset_entries(catalog, "performance"))
 
     def test_only_fabric_profiles_supported(self):
         self.assertTrue(client_mods.supports_profile(_profile()))
@@ -34,13 +34,13 @@ class InstallTests(unittest.TestCase):
     def test_installs_skips_installed_and_reports_failures(self):
         profile = _profile()
         entries = [
-            {"slug": "sodium", "title": "Sodium"},
-            {"slug": "lithium", "title": "Lithium"},
+            {"slug": "hud", "title": "Hud"},
+            {"slug": "blur", "title": "Blur", "fallbacks": ["blur2"]},
             {"slug": "ghost", "title": "Ghost"},
         ]
 
         def versions(slug, category, game_version, loader):
-            if slug == "ghost":
+            if slug in ("ghost", "blur"):
                 return []
             return [{"project_id": f"id_{slug}", "version_number": "1"}]
 
@@ -55,16 +55,16 @@ class InstallTests(unittest.TestCase):
                 mock.patch.object(modrinth, "compatible_versions", versions), \
                 mock.patch.object(modrinth, "install_mod_project_with_dependencies", fake_install), \
                 mock.patch.object(modrinth, "installed_mod_project_ids",
-                                  lambda p: {"id_lithium"}
+                                  lambda p: {"id_blur2"}
                                   | {r["project_id"] for r in p["installed_content"]["mods"]}):
             records, failures, _warn = client_mods.install_entries(
                 profile, entries, Path(tmp) / "mods"
             )
-        self.assertEqual(installed_calls, ["id_sodium"])
-        self.assertEqual(records[0]["slug"], "sodium")
+        self.assertEqual(installed_calls, ["id_hud"])
+        self.assertEqual(records[0]["slug"], "hud")
         self.assertEqual(len(failures), 1)
         self.assertIn("Ghost", failures[0])
-        self.assertEqual(profile["client_pack"], {"sodium": "id_sodium", "lithium": "id_lithium"})
+        self.assertEqual(profile["client_pack"], {"hud": "id_hud", "blur": "id_blur2"})
         self.assertEqual(len(profile["installed_content"]["mods"]), 1)
 
 

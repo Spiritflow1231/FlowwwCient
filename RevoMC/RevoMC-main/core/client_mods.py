@@ -79,10 +79,19 @@ def install_entries(
         slug, title = entry["slug"], entry.get("title", entry["slug"])
         if cancel_event is not None and cancel_event.is_set():
             raise modrinth.DownloadCancelled("Installation cancelled.")
-        try:
-            versions = modrinth.compatible_versions(slug, "mods", game_version, loader)
-        except Exception as exc:  # network / unknown slug
-            failures.append(f"{title}: {exc}")
+        versions = []
+        error = None
+        for candidate in [slug, *entry.get("fallbacks", [])]:
+            try:
+                versions = modrinth.compatible_versions(candidate, "mods", game_version, loader)
+            except Exception as exc:  # network / unknown slug
+                error = exc
+                continue
+            if versions:
+                error = None
+                break
+        if error is not None:
+            failures.append(f"{title}: {error}")
             continue
         if not versions:
             failures.append(f"{title}: no release for Minecraft {game_version} ({loader})")
